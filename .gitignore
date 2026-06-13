@@ -1,0 +1,23 @@
+.env
+__pycache__/
+*.py[cod]
+.venv/
+venv/
+.ipynb_checkpoints/
+~$*.docx
+
+# Raw MovieLens downloads (large — fetch locally)
+data/*.csv
+data/checksums.txt
+data/README.txt
+
+# Intermediate TMDb cache and local-only merges
+data/metadata_df.csv
+data/metadata_df.parquet
+data/movies_with_metadata.parquet
+
+# Processed artifacts — only train / val / test are committed
+data/processed/*
+!data/processed/train.parquet
+!data/processed/val.parquet
+!data/processed/test.parquet
