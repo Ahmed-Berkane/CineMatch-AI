@@ -1,106 +1,94 @@
 # CineMatch-AI
 
-A hybrid movie recommendation engine combining collaborative filtering and content-based signals (genres, overview, cast, director).
+**Purpose:** Help people discover movies they will actually enjoy — not just “similar titles,” but recommendations they can **understand and steer** in real time.
+
+CineMatch combines **collaborative filtering** (what millions of MovieLens users rated) with **content signals** (genres, era, metadata) in a single hybrid model (**HybridNet**). The Streamlit app turns that model into an interactive experience: pick favorites, get explainable recommendations, refine results with 👍/👎, and view a **Persona + Taste DNA** profile.
+
+---
+
+## What the app can do
+
+| Feature | Description |
+|---------|-------------|
+| **Pick favorites** | Live search, franchise-aware suggestions, poster grid |
+| **Recommendations** | Auto-generated hybrid rankings with match scores |
+| **Why this recommendation?** | Headline tied to your closest pick + bullet breakdown (content, HybridNet, cohort) |
+| **Diversity slider** | Similar only → Balanced → Explore new genres |
+| **Session 👍 / 👎** | Instant re-ranking via embedding shifts (undo supported) |
+| **Taste profile** | Auto-updated **AI Persona**, Taste DNA metrics, genre/decade charts |
+| **Model tab** | Architecture, thumbs behavior, challenges solved, benchmark table |
+
+```powershell
+pip install -r requirements.txt
+streamlit run app.py
+```
+
+**Requires locally:** `artifacts/best_model.pt` (from training) and `data/processed/*.parquet`.
+
+---
+
+## Challenges & how we address them
+
+| Challenge | Our approach |
+|-----------|--------------|
+| **Cold start** | No login needed — recommendations seed from movies you pick + content similarity + HybridNet movie embeddings |
+| **Black-box scores** | “Because you liked *X*…” headlines, theme tags, content vs collaborative breakdown |
+| **Samey lists** | Diversity slider applies genre-overlap penalty during greedy re-ranking |
+| **Static experience** | 👍 boosts similar embeddings; 👎 pushes away — list refreshes in-session |
+| **Scale (~22M ratings)** | Temporal train/val/test split, batched parquet I/O, resumable full pipeline |
+| **Sparse metadata** | TMDb enrichment (posters, cast, director, year) joined on `movieId` |
+| **Memory / Git limits** | `overview` kept in local metadata cache, not duplicated on every rating row |
+
+---
 
 ## Data preparation
 
-The full pipeline runs locally in **`data_prep.ipynb`**. Only the final **train / val / test** parquet files are committed to GitHub — everything else is intermediate and gitignored.
+Only **`train.parquet`**, **`val.parquet`**, and **`test.parquet`** are committed (Git LFS). Raw MovieLens CSVs and TMDb cache stay local.
 
 ### 1. Download MovieLens 32M
 
-Download and extract the dataset from GroupLens:
-
-- **Dataset page:** [MovieLens 32M](https://grouplens.org/datasets/movielens/32m/)
-- **Direct download:** [ml-32m.zip](https://files.grouplens.org/datasets/movielens/ml-32m.zip)
-
-Place these files in the `data/` folder:
+- [MovieLens 32M](https://grouplens.org/datasets/movielens/32m/) → extract into `data/`
 
 | File | Description |
 |------|-------------|
-| `movies.csv` | Movie titles and genres |
+| `movies.csv` | Titles and pipe-separated genres |
 | `ratings.csv` | User ratings (~32M rows) |
-| `links.csv` | `movieId` → IMDb / TMDb IDs |
-| `tags.csv` | User-generated tags (optional) |
-
-Column definitions ship with the download in `data/README.txt`.
+| `links.csv` | `movieId` → TMDb / IMDb IDs |
+| `tags.csv` | Optional user tags |
 
 ### 2. Fetch TMDb metadata
 
-MovieLens does not include plot summaries, cast, directors, or posters. We enrich movies via the [TMDb API](https://www.themoviedb.org/documentation/api).
+MovieLens lacks plots, cast, directors, and posters. We enrich via [TMDb API](https://www.themoviedb.org/documentation/api).
 
-1. Create a free API key at [TMDb API settings](https://www.themoviedb.org/settings/api)
-2. Copy `.env.example` to `.env` and set your key:
+```powershell
+copy .env.example .env   # set TMDB_API_KEY
+pip install -r requirements.txt
+python scripts/fetch_tmdb_metadata.py --only-rated
+```
 
-   ```
-   TMDB_API_KEY=your_key_here
-   ```
-
-3. Install dependencies and fetch metadata (resumes if interrupted):
-
-   ```powershell
-   pip install -r requirements.txt
-   python scripts/fetch_tmdb_metadata.py --only-rated
-   ```
-
-   This uses `links.csv` to map each rated movie to a TMDb ID, then caches results as `data/metadata_df.parquet` (local only, gitignored).
-
-   Fields fetched: `overview`, `cast`, `director`, `release_year`, `poster_url`.
+Writes `data/metadata_df.parquet` (local, gitignored): `overview`, `cast`, `director`, `release_year`, `poster_url`.
 
 ### 3. Build train / val / test
 
-Open **`data_prep.ipynb`** and run the **Build processed datasets** section. The notebook joins raw inputs in memory and writes **three files** to `data/processed/`:
+Temporal **70 / 10 / 20** split on `timestamp` (oldest → newest), then inner-join each split to the movies catalog (movies with successful TMDb fetch only).
+
+```python
+from scripts.data_helpers import build_movies_catalog, build_and_save_splits, project_root
+
+root = project_root()
+catalog = build_movies_catalog(root / "data/movies.csv", root / "data")
+build_and_save_splits(root / "data/ratings.csv", catalog, root / "data/processed")
+```
 
 | File | Share | Role |
 |------|-------|------|
-| `train.parquet` | ~70% | Fit models (oldest ratings) |
-| `val.parquet` | ~10% | Tune hyperparameters |
-| `test.parquet` | ~20% | Final evaluation — use once at the end |
+| `train.parquet` | ~70% | Fit models |
+| `val.parquet` | ~10% | Pick best model (lowest RMSE) |
+| `test.parquet` | ~20% | Final metrics — evaluate once |
 
-Each row is one rating with movie metadata attached (genres, cast, director, title, etc.). **`overview` is omitted** from these files — duplicating plot text on ~32M rows exceeds available RAM and GitHub size limits. Join `overview` locally from `metadata_df.parquet` by `movieId` when you need it for embeddings.
+**Why temporal?** Random splits leak future ratings. We train on the past and evaluate on the newest held-out data — matching real deployment.
 
-Intermediate tables are built one split at a time in memory and are **not** saved or committed.
-
-### How the joins work
-
-All joins use **`movieId`** as the key. `links.csv` and `tags.csv` are not merged in this step.
-
-**Step 1 — movies catalog (in memory, one row per movie)**
-
-| Left | Right | Join | Notes |
-|------|-------|------|-------|
-| `movies.csv` | `metadata_df.parquet` | inner on `movieId` | Only rows with `fetch_status == "ok"` |
-
-`movies.csv` supplies `title` and `genres`. `metadata_df.parquet` supplies TMDb fields. `links.csv` was already used during fetch to map `movieId` → TMDb ID.
-
-**Step 2 — split ratings, then join one split at a time**
-
-| Step | Input | Action |
-|------|-------|--------|
-| 2a | `ratings.csv` | Temporal split on `timestamp` (70 / 10 / 20) |
-| 2b | each split + movies catalog | inner join on `movieId`, write parquet in batches |
-
-Ratings for movies without successful TMDb metadata are dropped by the inner join. Splits are written one at a time to stay within memory limits.
-
-### Temporal split (70 / 10 / 20)
-
-Ratings are split **by time** on `timestamp` before joining metadata:
-
-```
-|-- train (70%) --|-- val (10%) --||-- test (20%) --|
-   oldest                              newest
-```
-
-- **Train** — `timestamp` below the 70th percentile cutoff
-- **Val** — between the 70th and 80th percentile cutoffs
-- **Test** — at or above the 80th percentile cutoff
-
-This is a **temporal split**, not random. Random splits leak future information in recommenders (the same user can appear in both sets). Temporal splitting matches the real task: learn from the past, tune on recent held-out data, evaluate on the newest ratings.
-
-| Set | Use for |
-|-----|---------|
-| **Train** | Fit model weights |
-| **Val** | Pick hyperparameters (learning rate, embedding size, regularization) |
-| **Test** | Report final metrics — do not tune on this set |
+---
 
 ## Column reference
 
@@ -110,80 +98,162 @@ Columns in `train.parquet`, `val.parquet`, and `test.parquet`.
 
 | Column | Type | Definition |
 |--------|------|------------|
-| `userId` | int | Anonymized MovieLens user ID. |
-| `movieId` | int | MovieLens movie ID; join key to movie metadata. |
-| `rating` | float | User rating on a 0.5–5.0 star scale. |
-| `timestamp` | int | Unix UTC seconds when the rating was recorded. |
+| `userId` | int | Anonymized MovieLens user |
+| `movieId` | int | Join key to movie metadata |
+| `rating` | float | Stars 0.5–5.0 |
+| `timestamp` | int | Unix UTC when rated |
 
-### Movie metadata columns
-
-Joined onto every row during data prep.
+### Movie metadata (joined per row)
 
 | Column | Type | Definition |
 |--------|------|------------|
-| `title` | string | Movie title with release year in parentheses. |
-| `genres` | string | Pipe-separated genre list from MovieLens (e.g. `Comedy\|Drama`). |
-| `tmdbId` | int | [TMDb](https://www.themoviedb.org) movie ID from `links.csv`. |
-| `director` | string | Primary director from TMDb credits. |
-| `cast` | string | Top 5 billed actors, comma-separated. |
-| `release_year` | int | Theatrical release year from TMDb. |
-| `poster_url` | string | Full URL to the poster image on TMDb’s CDN. |
+| `title` | string | Title with year in parentheses |
+| `genres` | string | Pipe-separated genres (e.g. `Action\|Thriller`) |
+| `tmdbId` | int | TMDb ID from `links.csv` |
+| `director` | string | Primary director (TMDb) |
+| `cast` | string | Top 5 billed actors |
+| `release_year` | int | Theatrical release year |
+| `poster_url` | string | TMDb poster CDN URL |
 
-`overview` is **not** stored on each rating row (too large at ~32M rows). Join it from local `metadata_df.parquet` by `movieId` when needed for text embeddings.
+`overview` is **not** on each rating row (too large at ~32M rows). Join from local `metadata_df.parquet` by `movieId` when needed.
 
-## Load in Python / notebook
+---
 
-```python
-import pandas as pd
+## Models
 
-train = pd.read_parquet("data/processed/train.parquet")
-val = pd.read_parquet("data/processed/val.parquet")
-test = pd.read_parquet("data/processed/test.parquet")
+All candidates train on the full cleaned **train** split; the winner is chosen by **lowest validation RMSE**, then reported once on **test**.
 
-print(train.shape, val.shape, test.shape)
-train.head()
+| Model | Signal | Role |
+|-------|--------|------|
+| **Baseline** | Global mean | Sanity check |
+| **GMF** | Collaborative | Linear dot-product embeddings |
+| **NeuMF** | Collaborative | GMF + MLP (He et al., 2017) |
+| **Neural CF** | Collaborative | Concat embeddings → MLP |
+| **ContentNet** | Content only | User + genre/year (no movie ID) |
+| **HybridNet** | **Hybrid** | User + movie embeddings + content → MLP |
+
+**Best model: HybridNet** — jointly learns *who rated what* and *what the movie is like*. Typical full-pipeline result: val RMSE **~0.82**, test RMSE **~0.83** (exact numbers in `artifacts/pipeline_report.json` after training).
+
+**Content encoding:** multi-hot genres + normalized `release_year`, L2-normalized per movie.
+
+### Train the pipeline
+
+```powershell
+python scripts/train_pipeline.py              # full run (~hours on CPU)
+python scripts/train_pipeline.py --fresh      # restart from scratch
+python scripts/train_pipeline.py --max-rows 100000 --epochs 2   # smoke test
 ```
 
-## What is committed to GitHub
+**Outputs** (`artifacts/`):
 
-| Tracked | Ignored (local only) |
-|---------|----------------------|
-| `data/processed/train.parquet` | Raw MovieLens `data/*.csv` |
-| `data/processed/val.parquet` | TMDb cache `data/metadata_df.*` |
-| `data/processed/test.parquet` | `data/movies_with_metadata.parquet` |
-| Scripts, notebooks, `.env.example` | Other files in `data/processed/` |
-| | `.env` (API keys) |
+| File | Contents |
+|------|----------|
+| `best_model.pt` | HybridNet weights, ID mappings, content lookup |
+| `pipeline_report.json` | Best model + all-model metrics |
+| `model_comparison.csv` | Val/test RMSE & MAE table |
 
-Clone the repo and you only need the three split files to start modeling. To rebuild them from scratch, download MovieLens locally, fetch TMDb metadata, and run `data_prep.ipynb`.
+```powershell
+python scripts/predict.py --user-id 1 --movie-id 260
+```
 
-> **Size note:** Split files may exceed GitHub's 100 MB per-file limit. If push fails, use [Git LFS](https://git-lfs.github.com/) or host on [Hugging Face Datasets](https://huggingface.co/datasets).
+---
+
+## Streamlit app architecture
+
+```
+Favorites → HybridNet + content similarity → ranked list
+                ↑                    ↑
+         👍/👎 session          Diversity slider
+         embedding shift         (genre penalty)
+                ↓
+    Explainability + Persona + Taste DNA
+```
+
+| Page | Behavior |
+|------|----------|
+| **Home** | Latest catalog titles |
+| **Pick favorites** | Search, smart suggestions, session feedback |
+| **Recommendations** | Auto-refresh; headline + bullets per title |
+| **Taste profile** | Auto persona, DNA metrics, charts |
+| **Model** | Technical overview, thumbs math, benchmark |
+
+**Serving formula:** `0.6 × content_similarity + 0.4 × HybridNet_embedding_similarity`, then session feedback and diversity adjustments.
+
+### Performance notes
+
+| What | Typical cost |
+|------|----------------|
+| **First Recommendations visit** | Loads HybridNet once (~5–15s on CPU) — cached for the session |
+| **After that** | Recommendations recompute in ~1–3s (cached by favorites + settings) |
+| **Pick favorites search** | Fast (cached catalog parquet) |
+| **Cohort explanations checkbox** | Scans train.parquet — slow first time; leave off for speed |
+
+Close other heavy apps if the laptop feels sluggish — PyTorch uses significant RAM.
+
+### Deploy
+
+**Streamlit Community Cloud**
+
+1. Push repo to GitHub (include `best_model.pt` via Git LFS or release asset)
+2. [share.streamlit.io](https://share.streamlit.io) → New app → `app.py`
+
+**Hugging Face Spaces**
+
+1. Create a new **Streamlit** Space
+2. Copy contents of `HUGGINGFACE.md` into the Space `README.md` (YAML frontmatter configures the Space)
+3. Push the repo or sync from GitHub
+4. Upload `artifacts/best_model.pt` via **Git LFS** or the Space **Files** tab (required for recommendations)
+5. Optional: upload `artifacts/movies_catalog.parquet` or ensure `data/processed/train.parquet` is present so the catalog can build
+
+**Mobile & desktop:** The app uses responsive CSS — grids stack on phones, the sidebar auto-collapses on small screens, tables scroll horizontally, and buttons are sized for touch. Test with Chrome DevTools device mode or open the Space URL on your phone.
+
+---
+
+## Quick start (clone only)
+
+If split parquets are already in the repo:
+
+```powershell
+git lfs install
+git clone <repo>
+cd CineMatch-AI
+pip install -r requirements.txt
+# Place artifacts/best_model.pt locally (train or download)
+streamlit run app.py
+```
+
+---
 
 ## Project layout
 
 ```
 CineMatch-AI/
-├── data/
-│   ├── *.csv              # raw MovieLens (gitignored, download locally)
-│   └── processed/         # only train / val / test are committed
-│       ├── train.parquet
-│       ├── val.parquet
-│       └── test.parquet
+├── app.py                    # Streamlit UI
+├── data/processed/           # train / val / test (committed via LFS)
 ├── scripts/
-│   ├── fetch_tmdb_metadata.py   # TMDb enrichment (CLI)
-│   └── data_helpers.py          # join/split helpers used by notebook
-├── data_prep.ipynb              # EDA + build train/val/test
-├── requirements.txt
-└── .env.example
+│   ├── fetch_tmdb_metadata.py
+│   ├── data_helpers.py       # joins, temporal split, parquet batches
+│   ├── model_helpers.py
+│   ├── neural_models.py      # HybridNet + baselines
+│   ├── train_pipeline.py
+│   ├── predict.py
+│   ├── catalog.py
+│   ├── recommender.py
+│   ├── explainability.py
+│   ├── persona.py
+│   ├── taste_profile.py
+│   └── feedback.py
+├── artifacts/                # local: best_model.pt, pipeline_report.json
+└── requirements.txt
 ```
+
+---
 
 ## Scripts reference
 
 ```powershell
-# Fetch TMDb metadata for rated movies (~84k, several hours)
 python scripts/fetch_tmdb_metadata.py --only-rated
-
-# Rebuild movies + metadata merge only
-python scripts/fetch_tmdb_metadata.py --merge-only
-
-# Build train / val / test → run data_prep.ipynb
+python scripts/train_pipeline.py
+python scripts/predict.py --user-id 1 --movie-id 260
+streamlit run app.py
 ```

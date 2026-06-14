@@ -22,6 +22,19 @@ MOVIE_COLUMNS = [
 ]
 
 
+def project_root() -> Path:
+    """Repo root — works when the kernel cwd is the repo or Notebooks/."""
+    cwd = Path.cwd().resolve()
+    if (cwd / "data").is_dir():
+        return cwd
+    if (cwd.parent / "data").is_dir():
+        return cwd.parent
+    raise FileNotFoundError(
+        "Could not find project root (no data/ folder). "
+        "Open the notebook from CineMatch-AI/ or CineMatch-AI/Notebooks/."
+    )
+
+
 def load_metadata(data_dir: Path) -> pd.DataFrame:
     parquet_path = data_dir / "metadata_df.parquet"
     csv_path = data_dir / "metadata_df.csv"
