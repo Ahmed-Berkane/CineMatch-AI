@@ -13,7 +13,9 @@ param(
 
 $ErrorActionPreference = "Stop"
 $Root = Split-Path -Parent (Split-Path -Parent $MyInvocation.MyCommand.Path)
-$HfDir = Join-Path (Split-Path -Parent $Root) "${SpaceName}-hf"
+# Hidden publish clone inside the repo (gitignored) — no sibling CineMatch-AI-hf folder.
+# If you still have ../CineMatch-AI-hf from an older deploy, you can delete it safely.
+$HfDir = Join-Path $Root ".hf-publish"
 
 function Require-Command($name) {
     if (-not (Get-Command $name -ErrorAction SilentlyContinue)) {

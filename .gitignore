@@ -1,11 +1,13 @@
 .env
 .streamlit/secrets.toml
+.hf-publish/
 __pycache__/
 *.py[cod]
 .venv/
 venv/
 .ipynb_checkpoints/
 ~$*.docx
+*.docx
 
 # Raw MovieLens downloads (large — fetch locally)
 data/*.csv
@@ -26,3 +28,6 @@ data/processed/*
 !data/processed/train.parquet
 !data/processed/val.parquet
 !data/processed/test.parquet
+
+# Dev notebooks (local exploration; pipeline lives in scripts/)
+Notebooks/

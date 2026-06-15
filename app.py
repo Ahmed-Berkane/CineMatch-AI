@@ -12,6 +12,10 @@ import html
 import sys
 from pathlib import Path
 
+import matplotlib
+
+matplotlib.use("Agg")
+import matplotlib.pyplot as plt
 import pandas as pd
 import streamlit as st
 from dotenv import load_dotenv
@@ -38,8 +42,10 @@ st.set_page_config(
     page_title="CineMatch AI",
     page_icon=str(LOGO_PATH) if LOGO_PATH.exists() else "🎬",
     layout="wide",
-    initial_sidebar_state="auto",
+    initial_sidebar_state="expanded",
 )
+
+NAV_PAGES = ["Home", "Pick favorites", "Recommendations", "Taste profile", "Model"]
 
 POSTER_CSS = """
 <style>
@@ -411,6 +417,41 @@ div[data-testid="stTextInput"] > div > div:focus-within {
     }
 }
 
+/* Top nav: first block in main — visible on phone; sidebar nav is desktop-only */
+.main .block-container > div[data-testid="stVerticalBlock"]:first-child {
+    margin: 0 0 1rem 0 !important;
+    padding: 0.55rem 0.65rem !important;
+    border-radius: 10px !important;
+    background: rgba(24, 24, 24, 0.96) !important;
+    border: 1px solid rgba(229, 9, 20, 0.2) !important;
+    box-shadow: 0 4px 18px rgba(0, 0, 0, 0.35) !important;
+}
+.main .block-container > div[data-testid="stVerticalBlock"]:first-child [data-testid="stRadio"] > div {
+    flex-wrap: wrap !important;
+    gap: 0.35rem !important;
+    justify-content: center !important;
+}
+.main .block-container > div[data-testid="stVerticalBlock"]:first-child [data-testid="stRadio"] label {
+    min-height: 2.5rem !important;
+    padding: 0.35rem 0.65rem !important;
+    font-size: 0.82rem !important;
+}
+.main .block-container > div[data-testid="stVerticalBlock"]:first-child [data-testid="stRadio"] label p {
+    font-size: 0.82rem !important;
+    line-height: 1.2 !important;
+}
+@media (max-width: 768px) {
+    .main .block-container > div[data-testid="stVerticalBlock"]:first-child {
+        position: sticky !important;
+        top: 3.25rem !important;
+        z-index: 999 !important;
+    }
+    [data-testid="stSidebarCollapsedControl"],
+    [data-testid="collapsedControl"] {
+        color: var(--cm-accent-hover) !important;
+    }
+}
+
 @media (max-width: 640px) {
     .main .block-container {
         padding-left: 0.75rem !important;
@@ -480,6 +521,27 @@ def render_page_title(title: str, subtitle: str = "") -> None:
     st.markdown(f"## {title}")
     if subtitle:
         st.caption(subtitle)
+
+
+def render_taste_bar_chart(df: pd.DataFrame, x_col: str, y_col: str, *, y_label: str) -> None:
+    """Bar chart with horizontal x-axis labels (Streamlit default rotates them)."""
+    plot_df = df.copy()
+    fig, ax = plt.subplots(figsize=(10, 4.2))
+    fig.patch.set_facecolor("#141414")
+    ax.set_facecolor("#141414")
+    ax.bar(plot_df[x_col].astype(str), plot_df[y_col], color="#E50914", width=0.62)
+    ax.set_ylabel(y_label, color="#b3b3b3")
+    ax.tick_params(axis="x", rotation=0, colors="#b3b3b3", labelsize=10)
+    ax.tick_params(axis="y", colors="#b3b3b3")
+    ax.grid(axis="y", color="#333333", linestyle="-", linewidth=0.6, alpha=0.8)
+    ax.set_axisbelow(True)
+    for spine in ("top", "right"):
+        ax.spines[spine].set_visible(False)
+    for spine in ("bottom", "left"):
+        ax.spines[spine].set_color("#444444")
+    fig.tight_layout()
+    st.pyplot(fig, use_container_width=True)
+    plt.close(fig)
 
 
 @st.cache_data(show_spinner=False)
@@ -990,7 +1052,7 @@ def page_home() -> None:
         and we'll recommend new titles with clear explanations — powered by **HybridNet**
         (22M MovieLens ratings + genre & era signals).
 
-        **Get started:** open **Pick favorites** in the sidebar, search for films you enjoy,
+        **Get started:** open **Pick favorites**, search for films you enjoy,
         then explore **Recommendations** and your **Taste profile**.
         """
     )
@@ -1010,15 +1072,10 @@ def page_home() -> None:
     nudge_home_layout()
 
 
-def sidebar() -> str:
+def render_sidebar_status() -> None:
     render_sidebar_logo()
     st.sidebar.markdown("### CineMatch AI")
     st.sidebar.caption("Hybrid movie recommendations")
-    page = st.sidebar.radio(
-        "Navigate",
-        ["Home", "Pick favorites", "Recommendations", "Taste profile", "Model"],
-        label_visibility="collapsed",
-    )
     st.sidebar.divider()
     st.sidebar.markdown(f"**Selected:** {len(st.session_state.selected_ids)} movie(s)")
     if st.session_state.selected_ids:
@@ -1031,7 +1088,19 @@ def sidebar() -> str:
     if n_up or n_down:
         st.sidebar.markdown(f"**Session feedback:** 👍 {n_up}  👎 {n_down}")
         st.sidebar.caption("Thumbs adjust recommendations until you close the app.")
-    return page
+
+
+def render_main_nav() -> str:
+    """Horizontal tab bar — primary navigation on all screen sizes."""
+    if "nav_page" not in st.session_state:
+        st.session_state.nav_page = NAV_PAGES[0]
+    return st.radio(
+        "Navigate",
+        NAV_PAGES,
+        key="nav_page",
+        horizontal=True,
+        label_visibility="collapsed",
+    )
 
 
 def page_pick_favorites() -> None:
@@ -1071,7 +1140,7 @@ def page_pick_favorites() -> None:
                     st.rerun()
             with c2:
                 if n_selected >= 3:
-                    st.info("Ready — open **Recommendations** in the sidebar.")
+                    st.info("Ready — open **Recommendations** from the menu.")
 
         with st.container(border=True):
             render_smart_suggestions()
@@ -1215,12 +1284,12 @@ def page_taste_profile() -> None:
     if stats.get("top_decades"):
         st.subheader("Favorite decades")
         decade_df = pd.DataFrame(stats["top_decades"], columns=["Decade", "Count"])
-        st.bar_chart(decade_df.set_index("Decade"), color="#E50914")
+        render_taste_bar_chart(decade_df, "Decade", "Count", y_label="Count")
 
     if dna and dna.get("genre_pct"):
         st.subheader("Genre mix (%)")
         pct_df = pd.DataFrame(dna["genre_pct"], columns=["Genre", "Share %"])
-        st.bar_chart(pct_df.set_index("Genre"), color="#E50914")
+        render_taste_bar_chart(pct_df, "Genre", "Share %", y_label="Share %")
 
     summary = profile.get("summary")
     if summary:
@@ -1358,7 +1427,8 @@ def page_model() -> None:
 
 
 def main() -> None:
-    page = sidebar()
+    render_sidebar_status()
+    page = render_main_nav()
     scroll_to_top_if_page_changed(page)
     if page == "Home":
         ensure_home_catalog_ready()

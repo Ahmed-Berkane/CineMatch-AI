@@ -1,5 +1,7 @@
 # CineMatch-AI
 
+**Live demo:** [CineMatch AI on Hugging Face Spaces](https://huggingface.co/spaces/Berkane-Nexus-Insights/CineMatch-AI)
+
 **Purpose:** Help people discover movies they will actually enjoy — not just “similar titles,” but recommendations they can **understand and steer** in real time.
 
 CineMatch combines **collaborative filtering** (what millions of MovieLens users rated) with **content signals** (genres, era, metadata) in a single hybrid model (**HybridNet**). The Streamlit app turns that model into an interactive experience: pick favorites, get explainable recommendations, refine results with 👍/👎, and view a **Persona + Taste DNA** profile.
@@ -22,6 +24,8 @@ CineMatch combines **collaborative filtering** (what millions of MovieLens users
 pip install -r requirements.txt
 streamlit run app.py
 ```
+
+**Try it online:** [huggingface.co/spaces/Berkane-Nexus-Insights/CineMatch-AI](https://huggingface.co/spaces/Berkane-Nexus-Insights/CineMatch-AI)
 
 **Requires locally:** `artifacts/best_model.pt` (from training) and `data/processed/*.parquet`.
 
@@ -192,20 +196,29 @@ Close other heavy apps if the laptop feels sluggish — PyTorch uses significant
 
 ### Deploy
 
+**Live deployment (Hugging Face Spaces — Docker)**
+
+| | |
+|---|---|
+| **App** | [https://huggingface.co/spaces/Berkane-Nexus-Insights/CineMatch-AI](https://huggingface.co/spaces/Berkane-Nexus-Insights/CineMatch-AI) |
+| **Deploy script** | `.\scripts\deploy_hf.ps1` (from repo root, after `hf auth login`) |
+
+The Space runs the Docker image defined in `Dockerfile`, with `artifacts/best_model.pt` and `data/processed/*.parquet` uploaded via Git LFS.
+
 **Streamlit Community Cloud**
 
 1. Push repo to GitHub (include `best_model.pt` via Git LFS or release asset)
 2. [share.streamlit.io](https://share.streamlit.io) → New app → `app.py`
 
-**Hugging Face Spaces**
+**Hugging Face Spaces (manual)**
 
-1. Create a new **Streamlit** Space
-2. Copy contents of `HUGGINGFACE.md` into the Space `README.md` (YAML frontmatter configures the Space)
-3. Push the repo or sync from GitHub
-4. Upload `artifacts/best_model.pt` via **Git LFS** or the Space **Files** tab (required for recommendations)
-5. Optional: upload `artifacts/movies_catalog.parquet` or ensure `data/processed/train.parquet` is present so the catalog can build
+1. Create a new **Docker** Space (see `HUGGINGFACE.md` for YAML frontmatter)
+2. Copy contents of `HUGGINGFACE.md` into the Space `README.md`
+3. Run `.\scripts\deploy_hf.ps1` or push the repo with LFS assets
+4. Ensure `artifacts/best_model.pt` and `data/processed/*.parquet` are present (required for recommendations)
+5. Optional: upload `artifacts/movies_catalog.parquet` or let the app build the catalog from `train.parquet`
 
-**Mobile & desktop:** The app uses responsive CSS — grids stack on phones, the sidebar auto-collapses on small screens, tables scroll horizontally, and buttons are sized for touch. Test with Chrome DevTools device mode or open the Space URL on your phone.
+**Mobile & desktop:** The app uses responsive CSS — a sticky top tab bar for navigation on phones, grids that stack on small screens, horizontally scrollable tables, and touch-sized buttons. Test with Chrome DevTools device mode or open the Space URL on your phone.
 
 ---
 
@@ -229,8 +242,10 @@ streamlit run app.py
 ```
 CineMatch-AI/
 ├── app.py                    # Streamlit UI
+├── HUGGINGFACE.md            # HF Space README template (used by deploy script)
 ├── data/processed/           # train / val / test (committed via LFS)
 ├── scripts/
+│   ├── deploy_hf.ps1         # Push to Hugging Face Spaces
 │   ├── fetch_tmdb_metadata.py
 │   ├── data_helpers.py       # joins, temporal split, parquet batches
 │   ├── model_helpers.py
@@ -246,6 +261,8 @@ CineMatch-AI/
 ├── artifacts/                # local: best_model.pt, pipeline_report.json
 └── requirements.txt
 ```
+
+`Notebooks/` is optional local EDA (gitignored). Raw MovieLens CSVs, TMDb cache, and `.hf-publish/` deploy clone stay local too.
 
 ---
 
