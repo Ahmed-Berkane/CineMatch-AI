@@ -7,6 +7,7 @@ Run:
 
 from __future__ import annotations
 
+import base64
 import html
 import sys
 from pathlib import Path
@@ -226,11 +227,47 @@ div[data-testid="stTextInput"] > div > div:focus-within {
     object-position: center;
 }
 .cinematch-poster-sm {
-    max-width: 120px;
+    width: 120px;
+    max-width: 100%;
     height: 180px;
 }
 .cinematch-poster-sm img {
     max-height: 180px;
+}
+.cinematch-poster-fav {
+    width: 72px !important;
+    max-width: 72px !important;
+    height: 108px !important;
+    margin: 0 auto 0.35rem auto;
+}
+.cinematch-poster-fav img {
+    max-height: 108px !important;
+    height: 100% !important;
+    object-fit: cover;
+}
+.cinematch-poster-grid {
+    width: 120px;
+    max-width: 100%;
+    height: 180px;
+    margin-left: auto;
+    margin-right: auto;
+}
+.cinematch-poster-grid img {
+    max-height: 180px;
+    height: 100%;
+    object-fit: cover;
+}
+.cinematch-home-header {
+    display: flex;
+    align-items: center;
+    gap: 1rem;
+    margin-bottom: 0.5rem;
+}
+.cinematch-home-header img {
+    display: block;
+    width: 88px;
+    height: auto;
+    border-radius: 8px;
 }
 .cinematch-poster-md {
     max-width: 140px;
@@ -249,13 +286,86 @@ div[data-testid="stTextInput"] > div > div:focus-within {
 .cinematch-suggest-row:last-child {
     border-bottom: none;
 }
-.cinematch-grid-card [data-testid="stVerticalBlockBorderWrapper"] {
-    min-height: 360px;
-}
 .cinematch-card-title {
     min-height: 3.4rem;
+    max-height: 3.4rem;
     line-height: 1.35;
     margin-bottom: 0.25rem;
+    overflow: hidden;
+    display: -webkit-box;
+    -webkit-line-clamp: 2;
+    -webkit-box-orient: vertical;
+}
+.cinematch-card-meta {
+    min-height: 2.5rem;
+    max-height: 2.5rem;
+    line-height: 1.3;
+    margin-bottom: 0.5rem;
+    color: #b3b3b3 !important;
+    font-size: 0.875rem;
+    overflow: hidden;
+    display: -webkit-box;
+    -webkit-line-clamp: 2;
+    -webkit-box-orient: vertical;
+}
+/* Equal-height movie cards in catalog/suggestion grids only */
+[data-testid="stHorizontalBlock"]:has(.cinematch-poster-grid) {
+    align-items: stretch !important;
+}
+[data-testid="stHorizontalBlock"]:has(.cinematch-poster-grid) > [data-testid="column"] {
+    display: flex !important;
+    flex-direction: column !important;
+    align-self: stretch !important;
+}
+[data-testid="column"]:has(.cinematch-poster-grid) > div[data-testid="stVerticalBlock"] {
+    flex: 1 1 auto !important;
+    display: flex !important;
+    flex-direction: column !important;
+    min-height: 0 !important;
+    height: auto !important;
+}
+[data-testid="column"]:has(.cinematch-poster-grid) {
+    text-align: center !important;
+}
+[data-testid="column"]:has(.cinematch-poster-grid) [data-testid="stVerticalBlockBorderWrapper"] {
+    flex: 1 1 auto !important;
+    display: flex !important;
+    flex-direction: column !important;
+    width: 100% !important;
+    min-height: 360px !important;
+    height: auto !important;
+    box-sizing: border-box !important;
+}
+[data-testid="column"]:has(.cinematch-poster-grid) [data-testid="stVerticalBlockBorderWrapper"] > [data-testid="stVerticalBlock"] {
+    flex: 1 1 auto !important;
+    display: flex !important;
+    flex-direction: column !important;
+    min-height: 0 !important;
+    height: auto !important;
+}
+[data-testid="column"]:has(.cinematch-poster-grid) [data-testid="stVerticalBlockBorderWrapper"] .stButton:first-of-type {
+    margin-top: auto !important;
+    padding-top: 0.35rem !important;
+}
+.cinematch-favorite-card [data-testid="stVerticalBlockBorderWrapper"] {
+    min-height: unset !important;
+    height: auto !important;
+    padding: 0.65rem 0.75rem !important;
+}
+[data-testid="column"]:has(.cinematch-poster-fav) [data-testid="stVerticalBlockBorderWrapper"] {
+    min-height: unset !important;
+    height: auto !important;
+}
+.cinematch-favorite-title {
+    font-size: 0.95rem;
+    line-height: 1.3;
+    margin-bottom: 0.15rem;
+}
+.cinematch-favorite-meta {
+    color: #b3b3b3 !important;
+    font-size: 0.78rem;
+    line-height: 1.25;
+    margin-bottom: 0.45rem;
 }
 .cinematch-persona-card {
     border-left: 4px solid var(--cm-accent);
@@ -287,14 +397,14 @@ div[data-testid="stTextInput"] > div > div:focus-within {
         padding-left: 1rem !important;
         padding-right: 1rem !important;
     }
-    .cinematch-grid-card [data-testid="stVerticalBlockBorderWrapper"] {
-        min-height: 300px;
+    [data-testid="column"]:has(.cinematch-poster-grid) [data-testid="stVerticalBlockBorderWrapper"] {
+        min-height: 340px !important;
     }
-    [data-testid="stHorizontalBlock"] {
+    [data-testid="stHorizontalBlock"]:has(.cinematch-poster-grid) {
         flex-wrap: wrap !important;
         gap: 0.5rem !important;
     }
-    [data-testid="stHorizontalBlock"] > [data-testid="column"] {
+    [data-testid="stHorizontalBlock"]:has(.cinematch-poster-grid) > [data-testid="column"] {
         flex: 1 1 calc(50% - 0.5rem) !important;
         min-width: calc(50% - 0.5rem) !important;
         width: calc(50% - 0.5rem) !important;
@@ -310,11 +420,16 @@ div[data-testid="stTextInput"] > div > div:focus-within {
     h2 { font-size: 1.25rem !important; }
     h3 { font-size: 1.1rem !important; }
     .cinematch-bg { display: none; }
-    .cinematch-grid-card [data-testid="stVerticalBlockBorderWrapper"] {
-        min-height: unset;
+    [data-testid="column"]:has(.cinematch-poster-grid) [data-testid="stVerticalBlockBorderWrapper"] {
+        min-height: 320px !important;
     }
     .cinematch-card-title {
-        min-height: unset;
+        min-height: 3rem;
+        max-height: 3rem;
+    }
+    .cinematch-card-meta {
+        min-height: 2.25rem;
+        max-height: 2.25rem;
     }
     .cinematch-poster-sm {
         max-width: 100px;
@@ -334,7 +449,7 @@ div[data-testid="stTextInput"] > div > div:focus-within {
         padding: 0.85rem;
         font-size: 0.95rem;
     }
-    [data-testid="stHorizontalBlock"] > [data-testid="column"] {
+    [data-testid="stHorizontalBlock"]:has(.cinematch-poster-grid) > [data-testid="column"] {
         flex: 1 1 100% !important;
         min-width: 100% !important;
         width: 100% !important;
@@ -367,7 +482,51 @@ def render_page_title(title: str, subtitle: str = "") -> None:
         st.caption(subtitle)
 
 
-def render_poster(url: str | None, *, size: str = "md", alt: str = "Movie poster") -> None:
+@st.cache_data(show_spinner=False)
+def load_logo_bytes() -> bytes | None:
+    """Read logo once; bytes work reliably on HF Docker (path strings can fail)."""
+    if not LOGO_PATH.exists():
+        return None
+    data = LOGO_PATH.read_bytes()
+    # Reject Git LFS pointer files or corrupt assets.
+    if len(data) < 8 or data[:4] != b"\x89PNG":
+        return None
+    return data
+
+
+def render_sidebar_logo() -> None:
+    logo = load_logo_bytes()
+    if logo:
+        st.sidebar.image(logo, width=160)
+    else:
+        st.sidebar.markdown("### 🎬")
+
+
+def render_home_header() -> None:
+    logo = load_logo_bytes()
+    if logo:
+        b64 = base64.b64encode(logo).decode("ascii")
+        st.markdown(
+            f"""
+            <div class="cinematch-home-header">
+                <img src="data:image/png;base64,{b64}" alt="CineMatch AI logo" />
+                <h1 style="margin:0;padding:0;border:none;">CineMatch AI</h1>
+            </div>
+            """,
+            unsafe_allow_html=True,
+        )
+    else:
+        st.markdown("# CineMatch AI")
+
+
+def render_poster(
+    url: str | None,
+    *,
+    size: str = "md",
+    alt: str = "Movie poster",
+    grid: bool = False,
+    eager: bool = False,
+) -> None:
     """Render a poster inside a fixed-size framed box."""
     if not url or (isinstance(url, float) and pd.isna(url)):
         if size != "xs":
@@ -377,12 +536,15 @@ def render_poster(url: str | None, *, size: str = "md", alt: str = "Movie poster
         "xs": "cinematch-poster-xs",
         "sm": "cinematch-poster-sm",
         "md": "cinematch-poster-md",
+        "fav": "cinematch-poster-fav",
     }.get(size, "cinematch-poster-md")
+    grid_class = " cinematch-poster-grid" if grid else ""
+    loading = "eager" if eager or grid else "lazy"
     safe_url = html.escape(str(url), quote=True)
     safe_alt = html.escape(alt, quote=True)
     st.markdown(
-        f'<div class="cinematch-poster {css_class}">'
-        f'<img src="{safe_url}" alt="{safe_alt}" loading="lazy" />'
+        f'<div class="cinematch-poster {css_class}{grid_class}">'
+        f'<img src="{safe_url}" alt="{safe_alt}" loading="{loading}" decoding="async" />'
         f"</div>",
         unsafe_allow_html=True,
     )
@@ -434,33 +596,53 @@ def render_grid_movie_card(
     """Equal-height movie card for grid layouts."""
     year_label = int(year) if year is not None and year != "?" and pd.notna(year) else "?"
     with st.container(border=True):
-        render_poster(poster_url if poster_url and pd.notna(poster_url) else None, size="sm", alt=title)
+        render_poster(
+            poster_url if poster_url and pd.notna(poster_url) else None,
+            size="sm",
+            alt=title,
+            grid=True,
+            eager=True,
+        )
         st.markdown(
             f'<div class="cinematch-card-title"><strong>{html.escape(title)}</strong></div>',
             unsafe_allow_html=True,
         )
-        st.caption(f"{genres} · {year_label}")
+        st.markdown(
+            f'<div class="cinematch-card-meta">{html.escape(str(genres))} · {year_label}</div>',
+            unsafe_allow_html=True,
+        )
         _add_button(movie_id, title, key=f"{key_prefix}_{movie_id}")
         if show_feedback:
             render_feedback_buttons(movie_id, title, key_prefix=f"{key_prefix}_fb", context=feedback_context)
 
 
 def render_favorite_card(row) -> None:
-    """Compact favorite tile: small poster + title + remove."""
+    """Compact favorite tile: small poster beside title + remove."""
     with st.container(border=True):
-        render_poster(
-            row.poster_url if pd.notna(row.poster_url) else None,
-            size="sm",
-            alt=str(row.title),
-        )
-        st.markdown(f"**{row.title}**")
-        year = int(row.release_year) if pd.notna(row.release_year) else "?"
-        st.caption(f"{row.genres} · {year}")
-        if st.button("Remove", key=f"rm_{row.movieId}", use_container_width=True):
-            st.session_state.selected_ids = [
-                mid for mid in st.session_state.selected_ids if mid != row.movieId
-            ]
-            st.rerun()
+        st.markdown('<div class="cinematch-favorite-card">', unsafe_allow_html=True)
+        c1, c2 = st.columns([1, 2.2], vertical_alignment="center", gap="small")
+        with c1:
+            render_poster(
+                row.poster_url if pd.notna(row.poster_url) else None,
+                size="fav",
+                alt=str(row.title),
+            )
+        with c2:
+            st.markdown(
+                f'<div class="cinematch-favorite-title"><strong>{html.escape(str(row.title))}</strong></div>',
+                unsafe_allow_html=True,
+            )
+            year = int(row.release_year) if pd.notna(row.release_year) else "?"
+            st.markdown(
+                f'<div class="cinematch-favorite-meta">{html.escape(str(row.genres))} · {year}</div>',
+                unsafe_allow_html=True,
+            )
+            if st.button("Remove", key=f"rm_{row.movieId}", use_container_width=True):
+                st.session_state.selected_ids = [
+                    mid for mid in st.session_state.selected_ids if mid != row.movieId
+                ]
+                st.rerun()
+        st.markdown("</div>", unsafe_allow_html=True)
 
 if "selected_ids" not in st.session_state:
     st.session_state.selected_ids: list[int] = []
@@ -592,7 +774,48 @@ def inject_app_theme() -> None:
     if st.session_state.get("_theme_injected"):
         return
     st.session_state._theme_injected = True
-    st.markdown(POSTER_CSS, unsafe_allow_html=True)
+    # st.html is reliable on hosted Streamlit; markdown CSS is often stripped.
+    st.html(POSTER_CSS)
+
+
+inject_app_theme()
+
+
+def scroll_to_top_if_page_changed(page: str) -> None:
+    """Reset scroll when switching sidebar pages (Streamlit keeps scroll position by default)."""
+    if st.session_state.get("_nav_page") == page:
+        return
+    st.session_state._nav_page = page
+    # st.html without height= — HF Streamlit rejects the height kwarg.
+    st.html(
+        """
+        <script>
+        (function () {
+            function goTop() {
+                try { window.scrollTo(0, 0); } catch (e) {}
+                try {
+                    var p = window.parent;
+                    if (p && p !== window) {
+                        p.scrollTo(0, 0);
+                        var doc = p.document;
+                        if (doc) {
+                            doc.documentElement.scrollTop = 0;
+                            doc.body.scrollTop = 0;
+                            var main = doc.querySelector("section.main");
+                            if (main) main.scrollTop = 0;
+                            var view = doc.querySelector('[data-testid="stAppViewContainer"]');
+                            if (view) view.scrollTop = 0;
+                        }
+                    }
+                } catch (e) {}
+            }
+            goTop();
+            setTimeout(goTop, 50);
+            setTimeout(goTop, 200);
+        })();
+        </script>
+        """
+    )
 
 
 @st.cache_data(show_spinner=False)
@@ -672,14 +895,13 @@ def render_smart_suggestions() -> None:
     st.caption("Same franchise or similar titles — 👍/👎 personalizes this session instantly.")
     n_cols = 2
     for row_start in range(0, len(picks), n_cols):
-        cols = st.columns(n_cols)
+        cols = st.columns(n_cols, gap="medium", vertical_alignment="top")
         for j, col in enumerate(cols):
             idx = row_start + j
             if idx >= len(picks):
                 break
             item = picks[idx]
             with col:
-                st.markdown('<div class="cinematch-grid-card">', unsafe_allow_html=True)
                 render_grid_movie_card(
                     movie_id=int(item["movie_id"]),
                     title=str(item["title"]),
@@ -690,16 +912,78 @@ def render_smart_suggestions() -> None:
                     show_feedback=True,
                     feedback_context="picker_suggestion",
                 )
-                st.markdown("</div>", unsafe_allow_html=True)
 
 
 @st.cache_data(show_spinner=False)
 def cached_latest_movies(limit: int = 12) -> pd.DataFrame:
-    return latest_movies(limit=limit)
+    return latest_movies(limit=limit, catalog=get_catalog())
+
+
+def render_latest_movies_grid(latest: pd.DataFrame, *, key_prefix: str = "home_add") -> None:
+    """Render a full movie grid; data must be loaded before calling (avoids partial rows)."""
+    if latest.empty:
+        st.info("No recent titles available in the catalog yet.")
+        return
+
+    with st.container():
+        n_cols = 4
+        for row_start in range(0, len(latest), n_cols):
+            cols = st.columns(n_cols, gap="medium", vertical_alignment="top")
+            for j, col in enumerate(cols):
+                idx = row_start + j
+                if idx >= len(latest):
+                    break
+                row = latest.iloc[idx]
+                with col:
+                    year = int(row.release_year) if pd.notna(row.release_year) else "?"
+                    render_grid_movie_card(
+                        movie_id=int(row.movieId),
+                        title=str(row.title),
+                        genres=str(row.genres),
+                        year=year,
+                        poster_url=row.poster_url if pd.notna(row.poster_url) else None,
+                        key_prefix=key_prefix,
+                    )
+
+
+def ensure_home_catalog_ready() -> None:
+    """Warm catalog once, then rerun so Streamlit paints the full grid (not just row 1)."""
+    if st.session_state.get("_home_catalog_ready"):
+        return
+    with st.spinner("Loading movie catalog…"):
+        get_catalog()
+    st.session_state._home_catalog_ready = True
+    st.rerun()
+
+
+def nudge_home_layout() -> None:
+    """Ask the browser to reflow after the grid mounts (helps HF iframe first paint)."""
+    st.html(
+        """
+        <script>
+        (function () {
+            function nudge() {
+                try { window.dispatchEvent(new Event("resize")); } catch (e) {}
+                try {
+                    var p = window.parent;
+                    if (p && p !== window) {
+                        p.dispatchEvent(new Event("resize"));
+                        var main = p.document.querySelector("section.main");
+                        if (main) { main.style.minHeight = main.scrollHeight + "px"; }
+                    }
+                } catch (e) {}
+            }
+            nudge();
+            setTimeout(nudge, 80);
+            setTimeout(nudge, 300);
+        })();
+        </script>
+        """
+    )
 
 
 def page_home() -> None:
-    st.markdown("# CineMatch AI")
+    render_home_header()
     st.markdown(
         """
         Welcome to your personal movie matchmaker. Tell us a few films you love,
@@ -722,31 +1006,12 @@ def page_home() -> None:
     st.caption("Recently released titles you can add to your favorites.")
 
     latest = cached_latest_movies(12)
-    n_cols = 4
-    for row_start in range(0, len(latest), n_cols):
-        cols = st.columns(n_cols)
-        for j, col in enumerate(cols):
-            idx = row_start + j
-            if idx >= len(latest):
-                break
-            row = latest.iloc[idx]
-            with col:
-                st.markdown('<div class="cinematch-grid-card">', unsafe_allow_html=True)
-                year = int(row.release_year) if pd.notna(row.release_year) else "?"
-                render_grid_movie_card(
-                    movie_id=int(row.movieId),
-                    title=str(row.title),
-                    genres=str(row.genres),
-                    year=year,
-                    poster_url=row.poster_url if pd.notna(row.poster_url) else None,
-                    key_prefix="home_add",
-                )
-                st.markdown("</div>", unsafe_allow_html=True)
+    render_latest_movies_grid(latest)
+    nudge_home_layout()
 
 
 def sidebar() -> str:
-    if LOGO_PATH.exists():
-        st.sidebar.image(str(LOGO_PATH), width=160)
+    render_sidebar_logo()
     st.sidebar.markdown("### CineMatch AI")
     st.sidebar.caption("Hybrid movie recommendations")
     page = st.sidebar.radio(
@@ -1093,11 +1358,14 @@ def page_model() -> None:
 
 
 def main() -> None:
-    inject_app_theme()
     page = sidebar()
+    scroll_to_top_if_page_changed(page)
     if page == "Home":
+        ensure_home_catalog_ready()
         page_home()
     elif page == "Pick favorites":
+        with st.spinner("Loading movie catalog…"):
+            get_catalog()
         page_pick_favorites()
     elif page == "Recommendations":
         page_recommendations()
