@@ -7,7 +7,6 @@ Run:
 
 from __future__ import annotations
 
-import base64
 import html
 import sys
 from pathlib import Path
@@ -263,18 +262,6 @@ div[data-testid="stTextInput"] > div > div:focus-within {
     height: 100%;
     object-fit: cover;
 }
-.cinematch-home-header {
-    display: flex;
-    align-items: center;
-    gap: 1rem;
-    margin-bottom: 0.5rem;
-}
-.cinematch-home-header img {
-    display: block;
-    width: 88px;
-    height: auto;
-    border-radius: 8px;
-}
 .cinematch-poster-md {
     max-width: 140px;
     height: 210px;
@@ -417,38 +404,22 @@ div[data-testid="stTextInput"] > div > div:focus-within {
     }
 }
 
-/* Top nav: first block in main — visible on phone; sidebar nav is desktop-only */
-.main .block-container > div[data-testid="stVerticalBlock"]:first-child {
-    margin: 0 0 1rem 0 !important;
-    padding: 0.55rem 0.65rem !important;
-    border-radius: 10px !important;
-    background: rgba(24, 24, 24, 0.96) !important;
-    border: 1px solid rgba(229, 9, 20, 0.2) !important;
-    box-shadow: 0 4px 18px rgba(0, 0, 0, 0.35) !important;
-}
-.main .block-container > div[data-testid="stVerticalBlock"]:first-child [data-testid="stRadio"] > div {
-    flex-wrap: wrap !important;
-    gap: 0.35rem !important;
-    justify-content: center !important;
-}
-.main .block-container > div[data-testid="stVerticalBlock"]:first-child [data-testid="stRadio"] label {
-    min-height: 2.5rem !important;
-    padding: 0.35rem 0.65rem !important;
-    font-size: 0.82rem !important;
-}
-.main .block-container > div[data-testid="stVerticalBlock"]:first-child [data-testid="stRadio"] label p {
-    font-size: 0.82rem !important;
-    line-height: 1.2 !important;
-}
 @media (max-width: 768px) {
-    .main .block-container > div[data-testid="stVerticalBlock"]:first-child {
-        position: sticky !important;
-        top: 3.25rem !important;
-        z-index: 999 !important;
+    /* Stack recommendation + search rows vertically */
+    div[data-testid="stVerticalBlockBorderWrapper"]:has(.cinematch-poster-md) [data-testid="stHorizontalBlock"],
+    div[data-testid="stVerticalBlockBorderWrapper"]:has(.cinematch-suggest-row) [data-testid="stHorizontalBlock"] {
+        flex-direction: column !important;
+        align-items: stretch !important;
     }
-    [data-testid="stSidebarCollapsedControl"],
-    [data-testid="collapsedControl"] {
-        color: var(--cm-accent-hover) !important;
+    div[data-testid="stVerticalBlockBorderWrapper"]:has(.cinematch-poster-md) [data-testid="column"],
+    div[data-testid="stVerticalBlockBorderWrapper"]:has(.cinematch-suggest-row) [data-testid="column"] {
+        width: 100% !important;
+        min-width: 100% !important;
+        flex: 1 1 100% !important;
+    }
+    .cinematch-poster-md {
+        max-width: 140px;
+        margin: 0 auto 0.75rem auto !important;
     }
 }
 
@@ -562,23 +533,6 @@ def render_sidebar_logo() -> None:
         st.sidebar.image(logo, width=160)
     else:
         st.sidebar.markdown("### 🎬")
-
-
-def render_home_header() -> None:
-    logo = load_logo_bytes()
-    if logo:
-        b64 = base64.b64encode(logo).decode("ascii")
-        st.markdown(
-            f"""
-            <div class="cinematch-home-header">
-                <img src="data:image/png;base64,{b64}" alt="CineMatch AI logo" />
-                <h1 style="margin:0;padding:0;border:none;">CineMatch AI</h1>
-            </div>
-            """,
-            unsafe_allow_html=True,
-        )
-    else:
-        st.markdown("# CineMatch AI")
 
 
 def render_poster(
@@ -832,10 +786,14 @@ def cached_recommend(
     ]
 
 
+THEME_CSS_VERSION = "nav-v5"
+
+
 def inject_app_theme() -> None:
-    if st.session_state.get("_theme_injected"):
+    theme_key = f"_theme_injected_{THEME_CSS_VERSION}"
+    if st.session_state.get(theme_key):
         return
-    st.session_state._theme_injected = True
+    st.session_state[theme_key] = True
     # st.html is reliable on hosted Streamlit; markdown CSS is often stripped.
     st.html(POSTER_CSS)
 
@@ -1045,14 +1003,14 @@ def nudge_home_layout() -> None:
 
 
 def page_home() -> None:
-    render_home_header()
+    render_page_title("CineMatch AI")
     st.markdown(
         """
         Welcome to your personal movie matchmaker. Tell us a few films you love,
         and we'll recommend new titles with clear explanations — powered by **HybridNet**
         (22M MovieLens ratings + genre & era signals).
 
-        **Get started:** open **Pick favorites**, search for films you enjoy,
+        **Get started:** open **Pick favorites** in the sidebar, search for films you enjoy,
         then explore **Recommendations** and your **Taste profile**.
         """
     )
@@ -1072,10 +1030,19 @@ def page_home() -> None:
     nudge_home_layout()
 
 
-def render_sidebar_status() -> None:
+def render_sidebar() -> None:
+    """Left panel: logo, navigation, and session status."""
     render_sidebar_logo()
     st.sidebar.markdown("### CineMatch AI")
     st.sidebar.caption("Hybrid movie recommendations")
+    if "nav_page" not in st.session_state:
+        st.session_state.nav_page = NAV_PAGES[0]
+    st.sidebar.radio(
+        "Navigate",
+        NAV_PAGES,
+        key="nav_page",
+        label_visibility="collapsed",
+    )
     st.sidebar.divider()
     st.sidebar.markdown(f"**Selected:** {len(st.session_state.selected_ids)} movie(s)")
     if st.session_state.selected_ids:
@@ -1088,19 +1055,6 @@ def render_sidebar_status() -> None:
     if n_up or n_down:
         st.sidebar.markdown(f"**Session feedback:** 👍 {n_up}  👎 {n_down}")
         st.sidebar.caption("Thumbs adjust recommendations until you close the app.")
-
-
-def render_main_nav() -> str:
-    """Horizontal tab bar — primary navigation on all screen sizes."""
-    if "nav_page" not in st.session_state:
-        st.session_state.nav_page = NAV_PAGES[0]
-    return st.radio(
-        "Navigate",
-        NAV_PAGES,
-        key="nav_page",
-        horizontal=True,
-        label_visibility="collapsed",
-    )
 
 
 def page_pick_favorites() -> None:
@@ -1427,8 +1381,8 @@ def page_model() -> None:
 
 
 def main() -> None:
-    render_sidebar_status()
-    page = render_main_nav()
+    render_sidebar()
+    page = st.session_state.nav_page
     scroll_to_top_if_page_changed(page)
     if page == "Home":
         ensure_home_catalog_ready()
