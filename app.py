@@ -566,22 +566,43 @@ def render_poster(
     )
 
 
-def _add_button(movie_id: int, title: str, *, key: str) -> None:
+def _add_button(
+    movie_id: int,
+    title: str,
+    *,
+    key: str,
+    disabled: bool = False,
+    disabled_help: str | None = None,
+) -> None:
     already = movie_id in st.session_state.selected_ids
     full = len(st.session_state.selected_ids) >= 10
-    label = "Added" if already else "Add"
+    if disabled:
+        label = disabled_help or "Not eligible"
+        button_disabled = True
+        kind = "secondary"
+    else:
+        label = "Added" if already else "Add"
+        button_disabled = already or full
+        kind = "primary" if not already and not full else "secondary"
     if st.button(
         label,
         key=key,
-        disabled=already or full,
-        type="primary" if not already and not full else "secondary",
+        disabled=button_disabled,
+        type=kind,
         use_container_width=True,
     ):
-        _add_favorite(movie_id, title)
-        st.rerun()
+        if not disabled:
+            _add_favorite(movie_id, title)
+            st.rerun()
 
 
-def render_search_hit_row(row, *, key_prefix: str = "search") -> None:
+def render_search_hit_row(
+    row,
+    *,
+    key_prefix: str = "search",
+    supported: bool = True,
+    disabled_help: str | None = None,
+) -> None:
     with st.container(border=True):
         c1, c2, c3 = st.columns([1, 5, 1], vertical_alignment="center")
         with c1:
@@ -594,8 +615,16 @@ def render_search_hit_row(row, *, key_prefix: str = "search") -> None:
             st.markdown(f"**{row.title}**")
             year = int(row.release_year) if pd.notna(row.release_year) else "?"
             st.caption(f"{row.genres} · {year}")
+            if not supported and disabled_help:
+                st.caption(disabled_help)
         with c3:
-            _add_button(int(row.movieId), str(row.title), key=f"{key_prefix}_{row.movieId}")
+            _add_button(
+                int(row.movieId),
+                str(row.title),
+                key=f"{key_prefix}_{row.movieId}",
+                disabled=not supported,
+                disabled_help=disabled_help,
+            )
 
 
 def render_grid_movie_card(
@@ -608,6 +637,8 @@ def render_grid_movie_card(
     key_prefix: str,
     show_feedback: bool = False,
     feedback_context: str = "picker_suggestion",
+    disabled: bool = False,
+    disabled_help: str | None = None,
 ) -> None:
     """Equal-height movie card for grid layouts."""
     year_label = int(year) if year is not None and year != "?" and pd.notna(year) else "?"
@@ -627,7 +658,15 @@ def render_grid_movie_card(
             f'<div class="cinematch-card-meta">{html.escape(str(genres))} · {year_label}</div>',
             unsafe_allow_html=True,
         )
-        _add_button(movie_id, title, key=f"{key_prefix}_{movie_id}")
+        _add_button(
+            movie_id,
+            title,
+            key=f"{key_prefix}_{movie_id}",
+            disabled=disabled,
+            disabled_help=disabled_help,
+        )
+        if disabled and disabled_help:
+            st.caption(disabled_help)
         if show_feedback:
             render_feedback_buttons(movie_id, title, key_prefix=f"{key_prefix}_fb", context=feedback_context)
 
@@ -747,6 +786,25 @@ def cached_movies_by_ids(seed_key: tuple[int, ...]) -> pd.DataFrame:
     return movies_by_ids(list(seed_key), get_catalog())
 
 
+@st.cache_data(show_spinner=False)
+def _get_supported_movie_ids() -> frozenset[int]:
+    engine = load_engine()
+    return frozenset(engine.mappings.movie_to_idx.keys())
+
+
+def _prune_unsupported_selected_ids() -> list[int]:
+    supported_ids = _get_supported_movie_ids()
+    selected = st.session_state.selected_ids
+    unsupported = [mid for mid in selected if mid not in supported_ids]
+    if unsupported:
+        st.warning(
+            "Some selected movies are not in the trained model and have been removed from your current selection. "
+            "Please choose titles seen during training."
+        )
+        st.session_state.selected_ids = [mid for mid in selected if mid in supported_ids]
+    return unsupported
+
+
 @st.cache_data(show_spinner="Building recommendations…")
 def cached_recommend(
     seed_key: tuple[int, ...],
@@ -768,6 +826,7 @@ def cached_recommend(
         disliked_ids=disliked,
         diversity=diversity,
     )
+    recs.sort(key=lambda r: r.score, reverse=True)
     return [
         {
             "movie_id": r.movie_id,
@@ -885,6 +944,7 @@ def live_search_box() -> None:
             st.caption("Keep typing — suggestions appear after 2 characters.")
         return
 
+    supported_ids = _get_supported_movie_ids()
     hits = suggest_movies(q, catalog, limit=8)
     if hits.empty:
         st.warning(
@@ -895,7 +955,17 @@ def live_search_box() -> None:
 
     st.caption("Suggestions update as you type — click **Add**:")
     for row in hits.itertuples(index=False):
-        render_search_hit_row(row, key_prefix="search")
+        supported = int(row.movieId) in supported_ids
+        render_search_hit_row(
+            row,
+            key_prefix="search",
+            supported=supported,
+            disabled_help=(
+                "Not eligible for this model: pick a movie from the training set."
+                if not supported
+                else None
+            ),
+        )
 
 
 def render_smart_suggestions() -> None:
@@ -911,6 +981,7 @@ def render_smart_suggestions() -> None:
     if not picks:
         return
 
+    supported_ids = _get_supported_movie_ids()
     st.markdown("##### Suggested for you")
     st.caption("Same franchise or similar titles — 👍/👎 personalizes this session instantly.")
     n_cols = 2
@@ -921,6 +992,7 @@ def render_smart_suggestions() -> None:
             if idx >= len(picks):
                 break
             item = picks[idx]
+            supported = int(item["movie_id"]) in supported_ids
             with col:
                 render_grid_movie_card(
                     movie_id=int(item["movie_id"]),
@@ -931,6 +1003,12 @@ def render_smart_suggestions() -> None:
                     key_prefix="suggest",
                     show_feedback=True,
                     feedback_context="picker_suggestion",
+                    disabled=not supported,
+                    disabled_help=(
+                        "Not eligible for this model: choose a training-set movie instead."
+                        if not supported
+                        else None
+                    ),
                 )
 
 
@@ -945,6 +1023,7 @@ def render_latest_movies_grid(latest: pd.DataFrame, *, key_prefix: str = "home_a
         st.info("No recent titles available in the catalog yet.")
         return
 
+    supported_ids = _get_supported_movie_ids()
     with st.container():
         n_cols = 4
         for row_start in range(0, len(latest), n_cols):
@@ -954,6 +1033,7 @@ def render_latest_movies_grid(latest: pd.DataFrame, *, key_prefix: str = "home_a
                 if idx >= len(latest):
                     break
                 row = latest.iloc[idx]
+                supported = int(row.movieId) in supported_ids
                 with col:
                     year = int(row.release_year) if pd.notna(row.release_year) else "?"
                     render_grid_movie_card(
@@ -963,6 +1043,12 @@ def render_latest_movies_grid(latest: pd.DataFrame, *, key_prefix: str = "home_a
                         year=year,
                         poster_url=row.poster_url if pd.notna(row.poster_url) else None,
                         key_prefix=key_prefix,
+                        disabled=not supported,
+                        disabled_help=(
+                            "Not eligible for this model: choose a training-set movie instead."
+                            if not supported
+                            else None
+                        ),
                     )
 
 
@@ -1004,14 +1090,19 @@ def nudge_home_layout() -> None:
 
 def page_home() -> None:
     render_page_title("CineMatch AI")
+    catalog = load_movie_catalog()
+    movie_count = len(catalog)
     st.markdown(
-        """
+        f"""
         Welcome to your personal movie matchmaker. Tell us a few films you love,
-        and we'll recommend new titles with clear explanations — powered by **HybridNet**
-        (22M MovieLens ratings + genre & era signals).
+        and we'll recommend new titles with clear explanations — powered by **HybridNet**.
+
+        Our movie catalog spans **{movie_count:,}+ movies**, powered by a model retrained on
+        the full dataset so recommendations are based on the most complete and robust signal available.
 
         **Get started:** open **Pick favorites** in the sidebar, search for films you enjoy,
         then explore **Recommendations** and your **Taste profile**.
+""
         """
     )
 
@@ -1062,6 +1153,8 @@ def page_pick_favorites() -> None:
         "Pick your favorites",
         "Search above, then review your picks and smart suggestions below.",
     )
+    if st.session_state.selected_ids:
+        _prune_unsupported_selected_ids()
     n_selected = len(st.session_state.selected_ids)
     st.progress(min(n_selected / 5, 1.0), text=f"{n_selected}/5 favorites selected (aim for 3–5)")
 
@@ -1071,6 +1164,10 @@ def page_pick_favorites() -> None:
 
     with st.container(border=True):
         st.markdown("##### Search movies")
+        st.caption(
+            "Only movies seen during HybridNet training can be used as favorite seeds; "
+            "other catalog titles may appear but are not eligible for recommendations."
+        )
         live_search_box()
 
     if n_selected:
@@ -1107,6 +1204,8 @@ def page_recommendations() -> None:
         "Your recommendations",
         "Updates automatically from your favorites and 👍/👎 feedback.",
     )
+    if st.session_state.selected_ids:
+        _prune_unsupported_selected_ids()
     ids = st.session_state.selected_ids
     if not ids:
         st.warning("Add favorites on the **Pick favorites** page first.")
@@ -1197,6 +1296,8 @@ def page_taste_profile() -> None:
         "Your taste profile",
         "Updates automatically from your favorites — persona, Taste DNA, and charts.",
     )
+    if st.session_state.selected_ids:
+        _prune_unsupported_selected_ids()
     ids = st.session_state.selected_ids
     if not ids:
         st.warning("Add favorites on the **Pick favorites** page first.")
@@ -1292,7 +1393,7 @@ def page_model() -> None:
     st.subheader("Architecture & serving")
     arch = pd.DataFrame(
         [
-            {"Component": "Training data", "Detail": "MovieLens 32M (~22M cleaned ratings) + TMDb metadata"},
+            {"Component": "Training data", "Detail": "MovieLens 32M temporal training/validation/test splits, then best model retrained on the full processed dataset"},
             {"Component": "HybridNet", "Detail": "User & movie embeddings (64-d) + genre/year content → MLP → rating"},
             {"Component": "Selection", "Detail": "Lowest validation RMSE among 6 candidates (Baseline → HybridNet)"},
             {"Component": "App ranking", "Detail": "60% content cosine similarity + 40% HybridNet embedding similarity"},
@@ -1304,7 +1405,7 @@ def page_model() -> None:
     st.subheader("Session 👍 / 👎 (live re-ranking)")
     st.markdown(
         """
-        Thumbs do **not** retrain the offline model on 22M rows — they **shift your session taste vector instantly**:
+        Thumbs do **not** retrain the offline model on the ~22M-row training split — they **shift your session taste vector instantly**:
 
         | Action | Effect |
         |--------|--------|
@@ -1377,7 +1478,7 @@ def page_model() -> None:
         show_cols = [c for c in ("model", "val_RMSE", "test_RMSE", "test_MAE") if c in comparison.columns]
         st.dataframe(comparison[show_cols], use_container_width=True, hide_index=True)
 
-    st.caption("Checkpoint: `artifacts/best_model.pt` · Metrics: `artifacts/pipeline_report.json`")
+    st.caption("Checkpoint: `artifacts/best_model_full.pt` · Metrics: `artifacts/pipeline_report.json`")
 
 
 def main() -> None:

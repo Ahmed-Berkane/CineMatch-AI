@@ -270,16 +270,33 @@ def train_model(
         start_epoch = int(ckpt["epoch"]) + 1
         print(f"    Resumed from epoch {start_epoch - 1}/{epochs}")
 
+    dataset_size = len(train_loader.dataset)
+    batch_count = len(train_loader)
+    progress_step = max(1, batch_count // 10)
+
     for epoch in range(start_epoch, epochs + 1):
+        print(f"  Starting epoch {epoch}/{epochs}: {dataset_size:,} rows, {batch_count} batches", flush=True)
         model.train()
         train_losses = []
-        for batch in train_loader:
+        for batch_idx, batch in enumerate(train_loader, start=1):
             optimizer.zero_grad()
             pred, y = _forward_batch(model, batch, model_type, device)
             loss = loss_fn(pred, y)
             loss.backward()
             optimizer.step()
             train_losses.append(loss.item())
+
+            if batch_idx % progress_step == 0 or batch_idx == batch_count:
+                processed = batch_idx * train_loader.batch_size
+                if processed > dataset_size:
+                    processed = dataset_size
+                processed_k = processed / 1000.0
+                total_k = dataset_size / 1000.0
+                print(
+                    f"    Epoch {epoch}/{epochs} batch {batch_idx}/{batch_count} "
+                    f"({processed_k:.1f}k/{total_k:.1f}k rows)",
+                    flush=True,
+                )
 
         row = {"epoch": epoch, "train_rmse": float(np.sqrt(np.mean(train_losses)))}
         if val_loader is not None:
@@ -299,6 +316,17 @@ def train_model(
                 },
                 epoch_checkpoint,
             )
+            if val_loader is not None:
+                status = (
+                    f"Epoch {epoch}/{epochs}: train_rmse={row['train_rmse']:.4f}, "
+                    f"val_rmse={row['val_rmse']:.4f} - saved {epoch_checkpoint}"
+                )
+            else:
+                status = (
+                    f"Epoch {epoch}/{epochs}: train_rmse={row['train_rmse']:.4f} - "
+                    f"saved {epoch_checkpoint}"
+                )
+            print(status, flush=True)
 
     return history
 

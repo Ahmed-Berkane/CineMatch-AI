@@ -41,6 +41,94 @@ from scripts.model_helpers import (
 from scripts import neural_models as nm
 
 
+def _load_best_checkpoint(output_dir: Path) -> dict:
+    path = output_dir / "best_model.pt"
+    if not path.exists():
+        raise FileNotFoundError(
+            f"Best model checkpoint not found at {path}. Run the pipeline first."
+        )
+    return torch.load(path, map_location="cpu", weights_only=False)
+
+
+def _processed_split_paths(processed_dir: Path) -> list[Path]:
+    paths = [processed_dir / p for p in ("train.parquet", "val.parquet", "test.parquet")]
+    existing = [p for p in paths if p.exists()]
+    if not existing:
+        raise FileNotFoundError(
+            "Could not find any processed split files under data/processed/. "
+            "Create train.parquet, val.parquet, and/or test.parquet first."
+        )
+    return existing
+
+
+def _load_full_dataset(paths: list[Path]) -> pd.DataFrame:
+    dfs: list[pd.DataFrame] = []
+    for path in paths:
+        df, _ = load_clean_parquet(path)
+        dfs.append(df)
+    full_df = pd.concat(dfs, ignore_index=True)
+    full_df = full_df.drop_duplicates(subset=["userId", "movieId"], keep="last").reset_index(drop=True)
+    return full_df
+
+
+def _load_unique_movies_from_paths(paths: list[Path]) -> pd.DataFrame:
+    dfs: list[pd.DataFrame] = []
+    for path in paths:
+        df = load_unique_movies(path)
+        dfs.append(df)
+    movies = pd.concat(dfs, ignore_index=True)
+    return movies.drop_duplicates("movieId").reset_index(drop=True)
+
+
+def _instantiate_model_from_checkpoint(
+    ckpt: dict,
+    mappings: nm.IdMappings,
+    content_dim: int,
+) -> torch.nn.Module:
+    cfg = ckpt.get("config", {})
+    cls = ckpt["model_class"]
+    embed_dim = int(cfg.get("embed_dim", 64))
+    hidden = tuple(cfg.get("hidden", (128, 64)))
+    dropout = float(cfg.get("dropout", 0.2))
+    if cls == "GMF":
+        return nm.GMF(mappings.n_users, mappings.n_movies, embed_dim=embed_dim)
+    if cls == "NeuMF":
+        return nm.NeuMF(
+            mappings.n_users,
+            mappings.n_movies,
+            gmf_dim=int(cfg.get("gmf_dim", 32)),
+            mlp_dim=int(cfg.get("mlp_dim", 32)),
+            hidden=hidden,
+            dropout=dropout,
+        )
+    if cls == "NeuralCF":
+        return nm.NeuralCF(
+            mappings.n_users,
+            mappings.n_movies,
+            embed_dim=embed_dim,
+            hidden=hidden,
+            dropout=dropout,
+        )
+    if cls == "ContentNet":
+        return nm.ContentNet(
+            mappings.n_users,
+            content_dim,
+            embed_dim=embed_dim,
+            hidden=hidden,
+            dropout=dropout,
+        )
+    if cls == "HybridNet":
+        return nm.HybridNet(
+            mappings.n_users,
+            mappings.n_movies,
+            content_dim,
+            embed_dim=embed_dim,
+            hidden=hidden,
+            dropout=dropout,
+        )
+    raise ValueError(f"Unknown model class in checkpoint: {cls}")
+
+
 @dataclass
 class PipelineConfig:
     embed_dim: int = 64
@@ -305,7 +393,7 @@ def _mappings_from_cache(cache: dict) -> nm.IdMappings:
 
 
 def _clear_resume_files(output_dir: Path) -> None:
-    for name in ("pipeline_state.json", "model_comparison.csv", "pipeline_report.json", "training_histories.json"):
+    for name in ("pipeline_state.json", "model_comparison.csv", "pipeline_report.json", "training_histories.json", "best_model_full.pt", "best_model_full_epoch.pt"):
         path = output_dir / name
         if path.exists():
             path.unlink()
@@ -413,6 +501,130 @@ def _finalize_run(
     print("=" * 60)
 
 
+def _save_full_checkpoint(
+    path: Path,
+    *,
+    model: torch.nn.Module,
+    model_name: str,
+    model_type: str,
+    mappings: nm.IdMappings,
+    content_lookup: np.ndarray,
+    vocabulary: list[str],
+    cfg: PipelineConfig,
+    metrics: dict,
+) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    torch.save(
+        {
+            "model_state_dict": model.state_dict(),
+            "model_name": model_name,
+            "model_type": model_type,
+            "model_class": model.__class__.__name__,
+            "n_users": mappings.n_users,
+            "n_movies": mappings.n_movies,
+            "content_dim": int(content_lookup.shape[1]),
+            "user_ids": mappings.user_ids,
+            "movie_ids": mappings.movie_ids,
+            "content_lookup": content_lookup,
+            "genre_vocabulary": vocabulary,
+            "config": asdict(cfg),
+            "metrics": metrics,
+        },
+        path,
+    )
+
+
+def _retrain_best_model_on_full_dataset(
+    *,
+    processed: Path,
+    output_dir: Path,
+    device: str,
+    epochs: int,
+    batch_size: int,
+    lr: float,
+) -> None:
+    print("\nRetraining best model on full processed dataset...")
+    paths = _processed_split_paths(processed)
+    full_df = _load_full_dataset(paths)
+    print(f"  full rows: {len(full_df):,}")
+
+    best_ckpt = _load_best_checkpoint(output_dir)
+    selected_model_name = best_ckpt["model_name"]
+    selected_model_type = best_ckpt["model_type"]
+    print(f"  selected best model: {selected_model_name}")
+
+    print("  Building fresh mappings from full data...")
+    mappings = nm.build_id_mappings(full_df)
+    movies_unique = _load_unique_movies_from_paths(paths)
+    from scripts.model_helpers import build_movie_content_features
+
+    movie_features_arr, vocabulary = build_movie_content_features(movies_unique)
+    movie_features = pd.DataFrame(movie_features_arr, index=movies_unique["movieId"].values)
+    content_lookup = nm.build_content_lookup(mappings, movie_features)
+
+    print("  Instantiating model architecture...")
+    model = _instantiate_model_from_checkpoint(best_ckpt, mappings, content_lookup.shape[1])
+
+    print("  Training on full dataset...")
+    full_ds = nm.RatingDataset(
+        full_df,
+        mappings,
+        content_lookup=content_lookup if selected_model_type != "cf" else None,
+    )
+    full_loader = torch.utils.data.DataLoader(full_ds, batch_size=batch_size, shuffle=True)
+    model = model.to(device)
+    epoch_checkpoint = output_dir / "best_model_full_epoch.pt"
+    history = nm.train_model(
+        model,
+        full_loader,
+        val_loader=None,
+        epochs=epochs,
+        lr=lr,
+        device=device,
+        model_type=selected_model_type,
+        epoch_checkpoint=epoch_checkpoint,
+        resume=True,
+    )
+
+    if epoch_checkpoint.exists():
+        epoch_checkpoint.unlink()
+
+    metrics = {
+        "selected_model": selected_model_name,
+        "model_type": selected_model_type,
+        "train_rows": len(full_df),
+        "epochs": epochs,
+        "lr": lr,
+        "batch_size": batch_size,
+        "device": device,
+        "history": history,
+    }
+    save_path = output_dir / "best_model_full.pt"
+    _save_full_checkpoint(
+        save_path,
+        model=model,
+        model_name=selected_model_name,
+        model_type=selected_model_type,
+        mappings=mappings,
+        content_lookup=content_lookup,
+        cfg=PipelineConfig(
+            embed_dim=best_ckpt.get("config", {}).get("embed_dim", 64),
+            gmf_dim=best_ckpt.get("config", {}).get("gmf_dim", 32),
+            mlp_dim=best_ckpt.get("config", {}).get("mlp_dim", 32),
+            hidden=tuple(best_ckpt.get("config", {}).get("hidden", (128, 64))),
+            dropout=float(best_ckpt.get("config", {}).get("dropout", 0.2)),
+            batch_size=batch_size,
+            epochs=epochs,
+            lr=lr,
+            seed=int(best_ckpt.get("config", {}).get("seed", 42)),
+        ),
+        vocabulary=vocabulary,
+        metrics=metrics,
+    )
+
+    print(f"\nSaved full-dataset retrained model: {save_path}")
+
+
 def run(args: argparse.Namespace) -> None:
     root = project_root()
     processed = root / args.data_dir / "processed"
@@ -431,7 +643,19 @@ def run(args: argparse.Namespace) -> None:
         seed=args.seed,
     )
     fingerprint = _config_fingerprint(cfg, args)
-    device = args.device or ("cuda" if torch.cuda.is_available() else "cpu")
+    device = args.device or ("cuda:0" if torch.cuda.is_available() else "cpu")
+    if device.startswith("cuda") and not torch.cuda.is_available():
+        print("CUDA was requested but no GPU is available; falling back to CPU.")
+        device = "cpu"
+
+    if device.startswith("cuda"):
+        cuda_count = torch.cuda.device_count()
+        device_name = torch.cuda.get_device_name(0) if cuda_count > 0 else "unknown"
+        print(f"Detected CUDA device(s): {cuda_count}, using {device} ({device_name})")
+        print(f"Torch CUDA version: {torch.version.cuda}")
+    else:
+        print("CUDA unavailable or disabled; using CPU.")
+
     torch.manual_seed(cfg.seed)
     np.random.seed(cfg.seed)
 
@@ -452,6 +676,17 @@ def run(args: argparse.Namespace) -> None:
     print("=" * 60)
 
     existing_state = _load_pipeline_state(state_path)
+    if args.retrain_best_full:
+        _retrain_best_model_on_full_dataset(
+            processed=processed,
+            output_dir=output_dir,
+            device=device,
+            epochs=args.epochs,
+            batch_size=args.batch_size,
+            lr=args.lr,
+        )
+        return
+
     if existing_state and not args.fresh:
         saved_fp = existing_state.get("config_fingerprint", {})
         if saved_fp and not _fingerprint_matches(saved_fp, fingerprint):
@@ -693,6 +928,11 @@ def build_parser() -> argparse.ArgumentParser:
         "--fresh",
         action="store_true",
         help="Discard checkpoints and retrain from scratch",
+    )
+    parser.add_argument(
+        "--retrain-best-full",
+        action="store_true",
+        help="Retrain the chosen best model on the full processed dataset and save it as best_model_full.pt",
     )
     return parser
 

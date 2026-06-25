@@ -48,10 +48,10 @@ class RecommenderEngine:
         device: str | None = None,
     ):
         root = project_root()
-        self.checkpoint_path = checkpoint_path or (root / "artifacts" / "best_model.pt")
+        self.checkpoint_path = checkpoint_path or (root / "artifacts" / "best_model_full.pt")
         if not self.checkpoint_path.exists():
             raise FileNotFoundError(
-                f"Missing {self.checkpoint_path}. Run: python scripts/train_pipeline.py"
+                f"Missing {self.checkpoint_path}. Run: python scripts/train_pipeline.py --retrain-best-full"
             )
 
         self.device = device or ("cuda" if torch.cuda.is_available() else "cpu")
@@ -65,7 +65,14 @@ class RecommenderEngine:
         self.mappings = nm.id_mappings_from_checkpoint(ckpt)
         self.content_lookup = np.asarray(ckpt["content_lookup"], dtype=np.float32)
         self.catalog = load_movie_catalog()
-        self.train_path = root / "data" / "processed" / "train.parquet"
+        processed = root / "data" / "processed"
+        self.processed_paths = [processed / p for p in ("train.parquet", "val.parquet", "test.parquet")]
+        self.processed_paths = [p for p in self.processed_paths if p.exists()]
+        if not self.processed_paths:
+            raise FileNotFoundError(
+                "Could not find any processed split files under data/processed/. "
+                "Create train.parquet, val.parquet, and/or test.parquet first."
+            )
 
         with torch.no_grad():
             self.movie_embeddings = self.model.movie_emb.weight.cpu().numpy()
@@ -282,25 +289,28 @@ class RecommenderEngine:
         fan_users: set[int] = set()
         cohort_counts: Counter[int] = Counter()
 
-        pf = pq.ParquetFile(self.train_path)
         cols = ["userId", "movieId", "rating"]
-        for batch in pf.iter_batches(batch_size=2_000_000, columns=cols):
-            df = batch.to_pandas()
-            liked_seeds = df[(df["movieId"].isin(seed_ids)) & (df["rating"] >= min_rating)]
-            fan_users.update(liked_seeds["userId"].astype(int).tolist())
+        for path in self.processed_paths:
+            pf = pq.ParquetFile(path)
+            for batch in pf.iter_batches(batch_size=2_000_000, columns=cols):
+                df = batch.to_pandas()
+                liked_seeds = df[(df["movieId"].isin(seed_ids)) & (df["rating"] >= min_rating)]
+                fan_users.update(liked_seeds["userId"].astype(int).tolist())
 
         if not fan_users:
             return tuple()
 
         fan_users_frozen = frozenset(fan_users)
-        for batch in pf.iter_batches(batch_size=2_000_000, columns=cols):
-            df = batch.to_pandas()
-            subset = df[
-                df["userId"].isin(fan_users_frozen)
-                & (df["rating"] >= min_rating)
-                & (~df["movieId"].isin(seed_ids))
-            ]
-            cohort_counts.update(subset["movieId"].astype(int).tolist())
+        for path in self.processed_paths:
+            pf = pq.ParquetFile(path)
+            for batch in pf.iter_batches(batch_size=2_000_000, columns=cols):
+                df = batch.to_pandas()
+                subset = df[
+                    df["userId"].isin(fan_users_frozen)
+                    & (df["rating"] >= min_rating)
+                    & (~df["movieId"].isin(seed_ids))
+                ]
+                cohort_counts.update(subset["movieId"].astype(int).tolist())
 
         if not cohort_counts:
             return tuple()

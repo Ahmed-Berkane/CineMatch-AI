@@ -27,20 +27,53 @@ def _catalog_cache_path() -> Path:
     return project_root() / "artifacts" / "movies_catalog.parquet"
 
 
+def _processed_split_paths() -> list[Path]:
+    root = project_root()
+    processed = root / "data" / "processed"
+    paths = [processed / p for p in ("train.parquet", "val.parquet", "test.parquet")]
+    existing = [p for p in paths if p.exists()]
+    if not existing:
+        raise FileNotFoundError(
+            "Could not find any processed split files under data/processed/. "
+            "Create train.parquet, val.parquet, and/or test.parquet first."
+        )
+    return existing
+
+
+def _catalog_cache_is_valid(cache_path: Path, paths: list[Path]) -> bool:
+    if not cache_path.exists():
+        return False
+    latest_mtime = max(p.stat().st_mtime for p in paths)
+    if cache_path.stat().st_mtime < latest_mtime:
+        return False
+
+    try:
+        cached_ids = set(pd.read_parquet(cache_path, columns=["movieId"])["movieId"].astype(int).unique())
+        split_ids: set[int] = set()
+        for path in paths:
+            pf = pq.ParquetFile(path)
+            for batch in pf.iter_batches(batch_size=2_000_000, columns=["movieId"]):
+                split_ids.update(batch.to_pandas()["movieId"].astype(int).tolist())
+        return split_ids.issubset(cached_ids)
+    except Exception:
+        return False
+
+
 @lru_cache(maxsize=1)
 def load_movie_catalog() -> pd.DataFrame:
-    """One row per movie from train.parquet, enriched with overview when available."""
-    root = project_root()
-    train_path = root / "data" / "processed" / "train.parquet"
+    """One row per movie from processed splits, enriched with overview when available."""
+    paths = _processed_split_paths()
     cache_path = _catalog_cache_path()
-    if cache_path.exists() and cache_path.stat().st_mtime >= train_path.stat().st_mtime:
+    if _catalog_cache_is_valid(cache_path, paths):
         return pd.read_parquet(cache_path)
 
-    pf = pq.ParquetFile(train_path)
+    pf = pq.ParquetFile(paths[0])
     cols = [c for c in CATALOG_COLS if c in pf.schema.names]
-    df = pd.read_parquet(train_path, columns=cols)
+    dfs = [pd.read_parquet(path, columns=cols) for path in paths]
+    df = pd.concat(dfs, ignore_index=True)
     catalog = df.drop_duplicates("movieId").reset_index(drop=True)
 
+    root = project_root()
     meta_path = root / "data" / "metadata_df.parquet"
     if meta_path.exists():
         meta = pd.read_parquet(meta_path, columns=["movieId", "overview", "fetch_status"])

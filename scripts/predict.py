@@ -103,8 +103,8 @@ def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(description="Predict ratings with a saved CineMatch model.")
     parser.add_argument(
         "--checkpoint",
-        default="artifacts/best_model.pt",
-        help="Path to best_model.pt from train_pipeline.py",
+        default="artifacts/best_model_full.pt",
+        help="Path to best_model_full.pt from train_pipeline.py --retrain-best-full",
     )
     parser.add_argument("--user-id", type=int, default=None)
     parser.add_argument("--movie-id", type=int, default=None)
