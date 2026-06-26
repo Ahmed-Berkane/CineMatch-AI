@@ -3,13 +3,14 @@
 from __future__ import annotations
 
 import re
+from datetime import datetime
 from functools import lru_cache
 from pathlib import Path
 
 import pandas as pd
 import pyarrow.parquet as pq
 
-from scripts.data_helpers import project_root
+from scripts.data_helpers import project_root, resolve_artifact
 
 
 CATALOG_COLS = [
@@ -27,15 +28,44 @@ def _catalog_cache_path() -> Path:
     return project_root() / "artifacts" / "movies_catalog.parquet"
 
 
+def is_readable_parquet(path: Path) -> bool:
+    """True when path is a real Parquet file (not missing, empty, or a Git LFS pointer)."""
+    if not path.exists():
+        return False
+    try:
+        with path.open("rb") as handle:
+            if handle.read(4) != b"PAR1":
+                return False
+        pq.ParquetFile(path)
+        return True
+    except Exception:
+        return False
+
+
+def _ensure_search_text(catalog: pd.DataFrame) -> pd.DataFrame:
+    if "search_text" in catalog.columns:
+        return catalog
+    out = catalog.copy()
+    out["search_text"] = (
+        out["title"].fillna("").astype(str)
+        + " "
+        + out["genres"].fillna("").astype(str)
+        + " "
+        + out["director"].fillna("").astype(str)
+    ).str.lower()
+    return out
+
+
 def _processed_split_paths() -> list[Path]:
     root = project_root()
     processed = root / "data" / "processed"
     paths = [processed / p for p in ("train.parquet", "val.parquet", "test.parquet")]
-    existing = [p for p in paths if p.exists()]
+    existing = [p for p in paths if is_readable_parquet(p)]
     if not existing:
         raise FileNotFoundError(
-            "Could not find any processed split files under data/processed/. "
-            "Create train.parquet, val.parquet, and/or test.parquet first."
+            "Could not find any readable processed split files under data/processed/. "
+            "Create train.parquet, val.parquet, and/or test.parquet first, "
+            "or ship artifacts/movies_catalog.parquet."
         )
     return existing
 
@@ -62,10 +92,14 @@ def _catalog_cache_is_valid(cache_path: Path, paths: list[Path]) -> bool:
 @lru_cache(maxsize=1)
 def load_movie_catalog() -> pd.DataFrame:
     """One row per movie from processed splits, enriched with overview when available."""
+    catalog_path = resolve_artifact(
+        "artifacts/movies_catalog.parquet",
+        readable_check=is_readable_parquet,
+    )
+    if catalog_path is not None:
+        return _ensure_search_text(pd.read_parquet(catalog_path))
+
     paths = _processed_split_paths()
-    cache_path = _catalog_cache_path()
-    if _catalog_cache_is_valid(cache_path, paths):
-        return pd.read_parquet(cache_path)
 
     pf = pq.ParquetFile(paths[0])
     cols = [c for c in CATALOG_COLS if c in pf.schema.names]
@@ -90,9 +124,15 @@ def load_movie_catalog() -> pd.DataFrame:
         + catalog["director"].fillna("").astype(str)
     ).str.lower()
 
+    counts = _movie_rating_counts()
+    if counts is not None:
+        catalog = catalog.merge(counts, on="movieId", how="left")
+        catalog["rating_count"] = catalog["rating_count"].fillna(0).astype("int32")
+
+    cache_path = _catalog_cache_path()
     cache_path.parent.mkdir(parents=True, exist_ok=True)
     catalog.to_parquet(cache_path, index=False)
-    return catalog
+    return _ensure_search_text(catalog)
 
 
 def _format_year(year: float | int | None) -> str:
@@ -244,19 +284,65 @@ def franchise_suggestions_for_selection(
     return results
 
 
-def latest_movies(limit: int = 12, catalog: pd.DataFrame | None = None) -> pd.DataFrame:
-    """Recent catalog titles with posters (year taken from title when possible)."""
+def latest_movies(
+    limit: int = 12,
+    catalog: pd.DataFrame | None = None,
+    *,
+    eligible_ids: set[int] | frozenset[int] | None = None,
+) -> pd.DataFrame:
+    """Popular recent catalog titles with posters (year taken from title when possible)."""
     catalog = load_movie_catalog() if catalog is None else catalog
     df = catalog.copy()
-    df["release_year"] = pd.to_numeric(df["release_year"], errors="coerce")
 
     def _title_year(title: str) -> float | None:
         match = re.search(r"\((\d{4})\)", str(title))
         return float(match.group(1)) if match else None
 
     df["title_year"] = df["title"].map(_title_year)
+    current_year = datetime.now().year
+    min_year = max(2015, current_year - 8)
     df = df[df["title_year"].notna()]
-    df = df[df["title_year"].between(2015, 2022)]
+    df = df[df["title_year"].between(min_year, current_year + 1)]
     df = df[df["poster_url"].notna() & (df["poster_url"].astype(str).str.len() > 0)]
-    df = df.sort_values(["title_year", "title"], ascending=[False, True])
+
+    counts = _movie_rating_counts()
+    if "rating_count" in df.columns:
+        df["rating_count"] = pd.to_numeric(df["rating_count"], errors="coerce").fillna(0)
+        sort_cols = ["title_year", "rating_count", "movieId"]
+        ascending = [False, False, False]
+    elif counts is not None:
+        df = df.merge(counts, on="movieId", how="left")
+        df["rating_count"] = df["rating_count"].fillna(0)
+        sort_cols = ["title_year", "rating_count", "movieId"]
+        ascending = [False, False, False]
+    else:
+        sort_cols = ["title_year", "movieId"]
+        ascending = [False, False]
+
+    df = df.sort_values(sort_cols, ascending=ascending)
+    if eligible_ids is not None:
+        df = df[df["movieId"].isin(eligible_ids)]
     return df.drop_duplicates("movieId").head(limit).reset_index(drop=True)
+
+
+@lru_cache(maxsize=1)
+def _movie_rating_counts() -> pd.DataFrame | None:
+    """Rating counts from processed splits when available (local dev / full deploy)."""
+    try:
+        paths = _processed_split_paths()
+    except FileNotFoundError:
+        return None
+
+    parts: list[pd.DataFrame] = []
+    for path in paths:
+        parts.append(pd.read_parquet(path, columns=["movieId"]))
+    if not parts:
+        return None
+
+    counts = (
+        pd.concat(parts, ignore_index=True)
+        .groupby("movieId", as_index=False)
+        .size()
+        .rename(columns={"size": "rating_count"})
+    )
+    return counts

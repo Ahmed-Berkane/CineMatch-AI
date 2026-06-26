@@ -3,7 +3,9 @@
 from __future__ import annotations
 
 import gc
+import os
 from pathlib import Path
+from typing import Callable
 
 import pandas as pd
 import pyarrow as pa
@@ -23,16 +25,66 @@ MOVIE_COLUMNS = [
 
 
 def project_root() -> Path:
-    """Repo root — works when the kernel cwd is the repo or Notebooks/."""
+    """Repo root — local dev (data/), HF Space (app.py + artifacts/), or Notebooks/."""
     cwd = Path.cwd().resolve()
-    if (cwd / "data").is_dir():
-        return cwd
-    if (cwd.parent / "data").is_dir():
-        return cwd.parent
+    for candidate in (cwd, cwd.parent):
+        if (candidate / "data").is_dir():
+            return candidate
+        if (candidate / "app.py").is_file():
+            return candidate
+        if (candidate / "artifacts").is_dir() and (candidate / "scripts").is_dir():
+            return candidate
+
+    root_from_file = Path(__file__).resolve().parent.parent
+    if (root_from_file / "app.py").is_file() or (root_from_file / "artifacts").is_dir():
+        return root_from_file
+
     raise FileNotFoundError(
-        "Could not find project root (no data/ folder). "
-        "Open the notebook from CineMatch-AI/ or CineMatch-AI/Notebooks/."
+        "Could not find project root. Run from the CineMatch-AI repo or deploy app.py with artifacts/."
     )
+
+
+def is_lfs_pointer(path: Path) -> bool:
+    """True when Git LFS left a pointer file instead of the real binary."""
+    if not path.is_file():
+        return False
+    try:
+        with path.open("rb") as handle:
+            return handle.read(64).startswith(b"version https://git-lfs")
+    except OSError:
+        return False
+
+
+def resolve_artifact(
+    relative_path: str,
+    *,
+    readable_check: Callable[[Path], bool] | None = None,
+) -> Path | None:
+    """Return a usable artifact path locally or via Hub download on HF Spaces."""
+    rel = relative_path.replace("\\", "/")
+    local = project_root() / rel
+    if local.exists() and (readable_check is None or readable_check(local)):
+        return local
+
+    space_id = os.environ.get("SPACE_ID")
+    if not space_id:
+        return None
+
+    try:
+        from huggingface_hub import hf_hub_download
+
+        downloaded = Path(
+            hf_hub_download(
+                repo_id=space_id,
+                filename=rel,
+                repo_type="space",
+            )
+        )
+        if readable_check is None or readable_check(downloaded):
+            return downloaded
+    except Exception:
+        return None
+    return None
 
 
 def load_metadata(data_dir: Path) -> pd.DataFrame:

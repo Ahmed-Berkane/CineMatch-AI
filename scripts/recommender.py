@@ -13,8 +13,8 @@ import pyarrow.parquet as pq
 import torch
 from sklearn.metrics.pairwise import cosine_similarity
 
-from scripts.catalog import load_movie_catalog, movies_by_ids
-from scripts.data_helpers import project_root
+from scripts.catalog import is_readable_parquet, load_movie_catalog, movies_by_ids
+from scripts.data_helpers import is_lfs_pointer, project_root, resolve_artifact
 from scripts.feedback import apply_feedback_to_scores
 from scripts.explainability import explain_recommendation
 from scripts.model_helpers import split_genre_string
@@ -48,11 +48,28 @@ class RecommenderEngine:
         device: str | None = None,
     ):
         root = project_root()
-        self.checkpoint_path = checkpoint_path or (root / "artifacts" / "best_model_full.pt")
-        if not self.checkpoint_path.exists():
+
+        def _loadable_checkpoint(path: Path) -> bool:
+            return path.stat().st_size > 1024 and not is_lfs_pointer(path)
+
+        resolved: Path | None = None
+        if checkpoint_path is not None:
+            rel = str(checkpoint_path.relative_to(root)).replace("\\", "/")
+            resolved = resolve_artifact(rel, readable_check=_loadable_checkpoint)
+
+        if resolved is None:
+            for rel in ("artifacts/best_model_full.pt", "artifacts/best_model.pt"):
+                resolved = resolve_artifact(rel, readable_check=_loadable_checkpoint)
+                if resolved is not None:
+                    break
+
+        if resolved is None:
             raise FileNotFoundError(
-                f"Missing {self.checkpoint_path}. Run: python scripts/train_pipeline.py --retrain-best-full"
+                "Missing model checkpoint under artifacts/. "
+                "Expected best_model.pt or best_model_full.pt."
             )
+
+        self.checkpoint_path = resolved
 
         self.device = device or ("cuda" if torch.cuda.is_available() else "cpu")
         self.content_weight = content_weight
@@ -66,13 +83,11 @@ class RecommenderEngine:
         self.content_lookup = np.asarray(ckpt["content_lookup"], dtype=np.float32)
         self.catalog = load_movie_catalog()
         processed = root / "data" / "processed"
-        self.processed_paths = [processed / p for p in ("train.parquet", "val.parquet", "test.parquet")]
-        self.processed_paths = [p for p in self.processed_paths if p.exists()]
-        if not self.processed_paths:
-            raise FileNotFoundError(
-                "Could not find any processed split files under data/processed/. "
-                "Create train.parquet, val.parquet, and/or test.parquet first."
-            )
+        self.processed_paths = [
+            processed / p
+            for p in ("train.parquet", "val.parquet", "test.parquet")
+            if is_readable_parquet(processed / p)
+        ]
 
         with torch.no_grad():
             self.movie_embeddings = self.model.movie_emb.weight.cpu().numpy()
@@ -145,7 +160,7 @@ class RecommenderEngine:
         )
 
         cohort_notes: dict[int, str] = {}
-        if explain and include_cohort_explanations:
+        if explain and include_cohort_explanations and self.processed_paths:
             cohort_notes = self._cohort_notes(seed_movie_ids, min_rating=min_rating_cohort)
 
         seed_titles: list[str] = []

@@ -1,6 +1,7 @@
 .env
 .streamlit/secrets.toml
 .hf-publish/
+.hf-staging/
 __pycache__/
 *.py[cod]
 .venv/
@@ -29,5 +30,6 @@ data/processed/*
 !data/processed/val.parquet
 !data/processed/test.parquet
 
-# Dev notebooks (local exploration; pipeline lives in scripts/)
+# Local scratch notebooks (committed walkthrough: docs/notebooks/)
 Notebooks/
+docs/notebooks/.ipynb_checkpoints/

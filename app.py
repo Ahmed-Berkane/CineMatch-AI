@@ -46,6 +46,10 @@ st.set_page_config(
 
 NAV_PAGES = ["Home", "Pick favorites", "Recommendations", "Taste profile", "Model"]
 
+# Shown when a catalog title is not in the HybridNet checkpoint (not user-facing "training set").
+NOT_IN_MODEL_HELP = "This title isn't in our recommendation model yet — try another pick."
+NOT_IN_MODEL_BTN = "Unavailable"
+
 POSTER_CSS = """
 <style>
 @import url('https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap');
@@ -577,7 +581,7 @@ def _add_button(
     already = movie_id in st.session_state.selected_ids
     full = len(st.session_state.selected_ids) >= 10
     if disabled:
-        label = disabled_help or "Not eligible"
+        label = NOT_IN_MODEL_BTN
         button_disabled = True
         kind = "secondary"
     else:
@@ -590,6 +594,7 @@ def _add_button(
         disabled=button_disabled,
         type=kind,
         use_container_width=True,
+        help=disabled_help if disabled and disabled_help else None,
     ):
         if not disabled:
             _add_favorite(movie_id, title)
@@ -769,6 +774,8 @@ def _add_favorite(movie_id: int, title: str) -> None:
 
 # Bump when RecommenderEngine API changes so Streamlit cache refreshes.
 ENGINE_CACHE_VERSION = 5
+# Bump when movies_catalog.parquet or catalog helpers change.
+CATALOG_CACHE_VERSION = 3
 
 
 @st.cache_resource(show_spinner="Loading HybridNet (once per session)…")
@@ -777,7 +784,7 @@ def load_engine(_cache_version: int = ENGINE_CACHE_VERSION):
 
 
 @st.cache_data(show_spinner=False)
-def get_catalog():
+def get_catalog(_cache_version: int = CATALOG_CACHE_VERSION):
     return load_movie_catalog()
 
 
@@ -798,8 +805,8 @@ def _prune_unsupported_selected_ids() -> list[int]:
     unsupported = [mid for mid in selected if mid not in supported_ids]
     if unsupported:
         st.warning(
-            "Some selected movies are not in the trained model and have been removed from your current selection. "
-            "Please choose titles seen during training."
+            "Some favorites aren't covered by our recommendation model and were removed. "
+            "Please pick another title from search or the home page."
         )
         st.session_state.selected_ids = [mid for mid in selected if mid in supported_ids]
     return unsupported
@@ -945,7 +952,11 @@ def live_search_box() -> None:
         return
 
     supported_ids = _get_supported_movie_ids()
-    hits = suggest_movies(q, catalog, limit=8)
+    hits = suggest_movies(q, catalog, limit=16)
+    if not hits.empty:
+        hits = hits.copy()
+        hits["_eligible"] = hits["movieId"].isin(supported_ids).astype(int)
+        hits = hits.sort_values("_eligible", ascending=False).drop(columns="_eligible").head(8)
     if hits.empty:
         st.warning(
             f"No movies matched **{q}**. Try another spelling or genre. "
@@ -953,18 +964,14 @@ def live_search_box() -> None:
         )
         return
 
-    st.caption("Suggestions update as you type — click **Add**:")
+    st.caption("Suggestions update as you type — eligible titles appear first:")
     for row in hits.itertuples(index=False):
         supported = int(row.movieId) in supported_ids
         render_search_hit_row(
             row,
             key_prefix="search",
             supported=supported,
-            disabled_help=(
-                "Not eligible for this model: pick a movie from the training set."
-                if not supported
-                else None
-            ),
+            disabled_help=NOT_IN_MODEL_HELP if not supported else None,
         )
 
 
@@ -1004,26 +1011,25 @@ def render_smart_suggestions() -> None:
                     show_feedback=True,
                     feedback_context="picker_suggestion",
                     disabled=not supported,
-                    disabled_help=(
-                        "Not eligible for this model: choose a training-set movie instead."
-                        if not supported
-                        else None
-                    ),
+                    disabled_help=NOT_IN_MODEL_HELP if not supported else None,
                 )
 
 
 @st.cache_data(show_spinner=False)
-def cached_latest_movies(limit: int = 12) -> pd.DataFrame:
-    return latest_movies(limit=limit, catalog=get_catalog())
+def cached_latest_movies(limit: int = 12, _cache_version: int = CATALOG_CACHE_VERSION) -> pd.DataFrame:
+    return latest_movies(
+        limit=limit,
+        catalog=get_catalog(),
+        eligible_ids=_get_supported_movie_ids(),
+    )
 
 
 def render_latest_movies_grid(latest: pd.DataFrame, *, key_prefix: str = "home_add") -> None:
     """Render a full movie grid; data must be loaded before calling (avoids partial rows)."""
     if latest.empty:
-        st.info("No recent titles available in the catalog yet.")
+        st.info("No recent recommendation-ready titles yet — use **Pick favorites** to search the catalog.")
         return
 
-    supported_ids = _get_supported_movie_ids()
     with st.container():
         n_cols = 4
         for row_start in range(0, len(latest), n_cols):
@@ -1033,7 +1039,6 @@ def render_latest_movies_grid(latest: pd.DataFrame, *, key_prefix: str = "home_a
                 if idx >= len(latest):
                     break
                 row = latest.iloc[idx]
-                supported = int(row.movieId) in supported_ids
                 with col:
                     year = int(row.release_year) if pd.notna(row.release_year) else "?"
                     render_grid_movie_card(
@@ -1043,12 +1048,6 @@ def render_latest_movies_grid(latest: pd.DataFrame, *, key_prefix: str = "home_a
                         year=year,
                         poster_url=row.poster_url if pd.notna(row.poster_url) else None,
                         key_prefix=key_prefix,
-                        disabled=not supported,
-                        disabled_help=(
-                            "Not eligible for this model: choose a training-set movie instead."
-                            if not supported
-                            else None
-                        ),
                     )
 
 
@@ -1090,19 +1089,14 @@ def nudge_home_layout() -> None:
 
 def page_home() -> None:
     render_page_title("CineMatch AI")
-    catalog = load_movie_catalog()
-    movie_count = len(catalog)
     st.markdown(
-        f"""
+        """
         Welcome to your personal movie matchmaker. Tell us a few films you love,
-        and we'll recommend new titles with clear explanations — powered by **HybridNet**.
-
-        Our movie catalog spans **{movie_count:,}+ movies**, powered by a model retrained on
-        the full dataset so recommendations are based on the most complete and robust signal available.
+        and we'll recommend new titles with clear explanations — powered by **HybridNet**
+        (32M MovieLens ratings + genre & era signals).
 
         **Get started:** open **Pick favorites** in the sidebar, search for films you enjoy,
         then explore **Recommendations** and your **Taste profile**.
-""
         """
     )
 
@@ -1114,7 +1108,7 @@ def page_home() -> None:
 
     st.markdown("---")
     st.markdown("### Latest movies in our catalog")
-    st.caption("Recently released titles you can add to your favorites.")
+    st.caption("Popular recent picks you can add as favorites — all shown titles work with HybridNet.")
 
     latest = cached_latest_movies(12)
     render_latest_movies_grid(latest)
@@ -1165,8 +1159,8 @@ def page_pick_favorites() -> None:
     with st.container(border=True):
         st.markdown("##### Search movies")
         st.caption(
-            "Only movies seen during HybridNet training can be used as favorite seeds; "
-            "other catalog titles may appear but are not eligible for recommendations."
+            "Search the full catalog — titles you can use as favorites appear first; "
+            "others are browse-only until we expand the model."
         )
         live_search_box()
 
@@ -1393,7 +1387,7 @@ def page_model() -> None:
     st.subheader("Architecture & serving")
     arch = pd.DataFrame(
         [
-            {"Component": "Training data", "Detail": "MovieLens 32M temporal training/validation/test splits, then best model retrained on the full processed dataset"},
+            {"Component": "Training data", "Detail": "MovieLens 32M ratings + TMDb metadata"},
             {"Component": "HybridNet", "Detail": "User & movie embeddings (64-d) + genre/year content → MLP → rating"},
             {"Component": "Selection", "Detail": "Lowest validation RMSE among 6 candidates (Baseline → HybridNet)"},
             {"Component": "App ranking", "Detail": "60% content cosine similarity + 40% HybridNet embedding similarity"},
@@ -1405,7 +1399,7 @@ def page_model() -> None:
     st.subheader("Session 👍 / 👎 (live re-ranking)")
     st.markdown(
         """
-        Thumbs do **not** retrain the offline model on the ~22M-row training split — they **shift your session taste vector instantly**:
+        Thumbs do **not** retrain the offline model on 32M rows — they **shift your session taste vector instantly**:
 
         | Action | Effect |
         |--------|--------|
@@ -1465,7 +1459,7 @@ def page_model() -> None:
                 "Approach": "Session thumbs re-rank via embedding shifts without full retraining",
             },
             {
-                "Challenge": "Scale (22M rows)",
+                "Challenge": "Scale (32M rows)",
                 "Approach": "Temporal split, batched parquet writes, resumable `train_pipeline.py`, cached app inference",
             },
         ]
